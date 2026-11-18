@@ -30,6 +30,14 @@ graalvmNative {
             "-H:+UnlockExperimentalVMOptions",
             "-H:+SharedArenaSupport",
             "-H:-UnlockExperimentalVMOptions",
+            // netty-codec-classes-quic is on the classpath only for Vert.x's `instanceof QuicChannel`
+            // check. Nothing in it may initialise at build time: BoringSSL's <clinit> needs the native
+            // QUIC library, which is excluded (no HTTP/3, ADR 0003).
+            "--initialize-at-run-time=io.netty.handler.codec.quic",
+            // Netty's SslContext holds a static SecureRandom. Initialised at build time, its seed would be
+            // baked into the binary; Native Image refuses that once the class is reachable (it is, via
+            // Vert.x's TLS context providers). Run-time init gives each process a fresh seed.
+            "--initialize-at-run-time=io.netty.handler.ssl.SslContext",
         )
     }
     binaries.named("test") {

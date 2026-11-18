@@ -23,3 +23,14 @@ Option 2.
 - Memory: pooled direct buffers. Allocator settings are tuned in M10.
 - Native Image: supported upstream. `nativeTest` covers h1, h2, and h2c in M1.
 - Operational: one framework for server, client, timers, and Redis.
+
+## Amendment (2026-11-19, M2): Netty QUIC classes
+- Vert.x 5.2's `ConnectionBase.remoteAddress()` does `instanceof io.netty.handler.codec.quic.QuicChannel`.
+  With `netty-codec-classes-quic` excluded (M1), every `remoteAddress()` call throws
+  `NoClassDefFoundError` on the JVM. M1 never called it; the M2 forwarding-header code does.
+- So `netty-codec-classes-quic` stays on the classpath (pure Java, no native-image metadata). HTTP/3,
+  native QUIC and tcnative stay excluded.
+- In Native Image, `io.netty.handler.codec.quic` initialises at run time (`BoringSSL.<clinit>` needs the
+  excluded native library), and so does `io.netty.handler.ssl.SslContext`, whose static `SecureRandom`
+  would otherwise be seeded at build time and baked into the binary. Both flags are in
+  `gw.native-conventions`.

@@ -33,12 +33,13 @@ if you change a command, module, or convention, update this file in the same com
 ```bash
 # Java (always use the wrapper)
 ./gradlew build                      # compile, unit tests, Checkstyle, SpotBugs, dependency scan
-./gradlew :gateway-app:run           # gateway on the JVM (dev)
+GW_CONFIG_FILE=path/to/gateway.json ./gradlew :gateway-app:run   # gateway on the JVM (dev); env vars: docs/operations/configuration.md
 ./gradlew :control-plane:run         # Admin API on the JVM (dev)
 ./gradlew :integration-tests:integrationTest        # Testcontainers suites, gateway as JVM process (needs Docker)
 ./gradlew :integration-tests:nativeIntegrationTest  # same suites against the native binary (needs Docker)
 ./gradlew :gateway-app:nativeCompile # native binary -> gateway-app/build/native/nativeCompile/gateway
-./gradlew nativeTest                 # unit tests compiled and run as a native image
+./gradlew nativeTest                 # unit tests as native images (config-model, core, proxy, plugins, app)
+./gradlew :benchmarks:jmh -Pjmh.args="RouterBenchmark -prof gc"   # JMH; results in benchmarks/build/results/jmh
 ./gradlew :gateway-app:installDist   # jvm-prod distribution -> gateway-app/build/install/gateway/
 gateway-app/build/native/nativeCompile/gateway check-etcd --help   # etcd connectivity/role check
 
@@ -112,7 +113,10 @@ For anything in the request path or config worker, also run the native build and
 - Before adding a dependency, confirm Native Image support (official docs or the GraalVM
   Reachability Metadata repository) and note it in the PR/commit message.
 - Required flags live in `build-logic/.../gw.native-conventions.gradle.kts` (e.g. `-H:+SharedArenaSupport`
-  for Netty on JDK 25 — ADR 0008). Netty's HTTP/3, QUIC and tcnative jars are excluded build-wide.
+  for Netty on JDK 25 — ADR 0008, still required on 25.0.4). Netty's HTTP/3, native QUIC and tcnative jars
+  are excluded build-wide; `netty-codec-classes-quic` must stay (Vert.x `remoteAddress()` needs it) and
+  its package plus Netty `SslContext` initialise at run time (ADR 0003 amendment).
+- Modules whose code runs in the request path apply `gw.native-conventions` so `nativeTest` covers them.
 - The GraalVM reachability metadata repository is off by default (`-Pgw.metadataRepository=true`).
 - The tracing agent is for discovery only. Review and trim what it generates before committing.
 - A feature is not done until it works in the native binary, not just on the JVM.

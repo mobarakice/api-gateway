@@ -8,6 +8,9 @@ plugins {
 
 dependencies {
     implementation(project(":gateway-config"))
+    implementation(project(":gateway-core"))
+    implementation(project(":gateway-proxy"))
+    implementation(project(":gateway-plugins"))
     implementation(libs.vertx.core)
     implementation(libs.slf4j.api)
     implementation(project(":gateway-observability"))

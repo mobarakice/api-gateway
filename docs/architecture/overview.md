@@ -30,7 +30,7 @@ flowchart LR
 | Module | Responsibility | Depends on |
 |---|---|---|
 | `config-model` | Config records (routes, services, upstreams, consumers, credentials, plugin configs, policies, certificates), value envelope, JSON Schemas for every plugin | Jackson |
-| `gateway-core` | Immutable `Snapshot`, compiled radix route trie, plugin SPI (`Plugin`, `PluginFactory`, `Phase`), static `PluginRegistry`, request pipeline | `config-model`, Vert.x core |
+| `gateway-core` | Immutable `Snapshot` + `SnapshotCompiler`, segment route trie, plugin SPI (`Plugin`, `PluginFactory`, `Phase`), static `PluginRegistry`, request pipeline (validation, forwarding headers, chain, `Forwarder` SPI) | `config-model`, Vert.x core |
 | `gateway-plugins` | Built-in plugins: JWT/OIDC, API key, HMAC, authz, rate limit, cache, CORS, transforms, IP rules | `gateway-core` |
 | `gateway-proxy` | Upstream pools, load balancers, health checks, circuit breaker, retries + budget, streaming proxy, SSRF connect-time check | `gateway-core` |
 | `gateway-config` | etcd client wrapper, config worker, snapshot compiler, LKG store, node heartbeat | `gateway-core`, `config-model` |
@@ -40,7 +40,7 @@ flowchart LR
 | `admin-console` | React + TS console (pnpm, not Gradle) | Admin API |
 | `test-support` | Test-only PKI and etcd Testcontainers fixtures | BouncyCastle, Testcontainers |
 | `integration-tests` | Testcontainers suites against the gateway process (JVM and native binary) | all |
-| `benchmarks` | JMH microbenchmarks | `gateway-core`, `gateway-plugins`, `gateway-proxy` |
+| `benchmarks` | JMH microbenchmarks (`./gradlew :benchmarks:jmh`) | `gateway-core`, `gateway-plugins`, `gateway-proxy` |
 
 ## Request flow
 
@@ -141,3 +141,6 @@ M8 observability, M9 deployment, M10 benchmarks.
 | [0008](../adr/0008-native-gc.md) | Native Image GC | Proposed (measured in M10) |
 | [0009](../adr/0009-etcd-client.md) | etcd client: v3 HTTP/JSON gateway over Vert.x | Accepted |
 | [0010](../adr/0010-dependency-vulnerability-scan.md) | Dependency scan via OSV | Accepted |
+| [0011](../adr/0011-snapshot-and-plugin-chains.md) | Immutable snapshots and compile-time plugin chains | Accepted |
+| [0012](../adr/0012-routing.md) | Routing: host table + segment radix trie | Accepted |
+| [0013](../adr/0013-request-validation-and-forwarding.md) | Request validation, path policy, forwarding headers | Accepted |

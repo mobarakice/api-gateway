@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://apigw.local/schemas/plugins/headers.json",
+  "title": "headers plugin",
+  "description": "Static header edits. Per side: remove, then set, then add. Framing and hop-by-hop headers cannot be edited.",
+  "type": "object",
+  "additionalProperties": false,
+  "minProperties": 1,
+  "properties": {
+    "request": { "$ref": "#/$defs/edits" },
+    "response": { "$ref": "#/$defs/edits" }
+  },
+  "$defs": {
+    "name": {
+      "type": "string",
+      "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,256}$",
+      "not": {
+        "pattern": "^(?i)(connection|keep-alive|proxy-connection|te|trailer|transfer-encoding|upgrade|content-length|host|http2-settings)$"
+      }
+    },
+    "value": { "type": "string", "maxLength": 8192, "pattern": "^[\\t\\x20-\\x7e]*$" },
+    "pairs": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/name" },
+      "additionalProperties": { "$ref": "#/$defs/value" }
+    },
+    "edits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "set": { "$ref": "#/$defs/pairs" },
+        "add": { "$ref": "#/$defs/pairs" },
+        "remove": { "type": "array", "items": { "$ref": "#/$defs/name" }, "uniqueItems": true }
+      }
+    }
+  }
+}

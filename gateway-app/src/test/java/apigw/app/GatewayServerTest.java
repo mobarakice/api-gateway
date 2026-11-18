@@ -2,6 +2,10 @@ package apigw.app;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import apigw.core.plugin.PluginRegistry;
+import apigw.core.snapshot.SnapshotCompiler;
+import apigw.core.snapshot.SnapshotHolder;
+import apigw.model.ConfigDecoder;
 import io.vertx.core.Vertx;
 import io.vertx.core.VertxOptions;
 import io.vertx.core.http.HttpClientAgent;
@@ -11,8 +15,10 @@ import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpVersion;
 import io.vertx.core.http.RequestOptions;
 import io.vertx.core.net.PemTrustOptions;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterAll;
@@ -34,7 +40,11 @@ class GatewayServerTest {
         BootstrapConfig config = new BootstrapConfig("127.0.0.1", 0, 0, 0, 2,
                 Optional.of(new BootstrapConfig.TlsFiles(TLS.resolve("server.pem"), TLS.resolve("server-key.pem"))),
                 Duration.ofSeconds(2));
-        server = new GatewayServer(vertx, config, readiness);
+        SnapshotHolder snapshots = new SnapshotHolder();
+        // A valid config with no routes: every request is a routed 404; readiness is not marked.
+        snapshots.publish(new SnapshotCompiler(new PluginRegistry(List.of()))
+                .compile(ConfigDecoder.decode("{\"schemaVersion\":1}".getBytes(StandardCharsets.UTF_8))));
+        server = new GatewayServer(vertx, config, readiness, snapshots);
         await(server.start());
     }
 

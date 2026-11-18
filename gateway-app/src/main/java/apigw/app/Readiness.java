@@ -3,10 +3,13 @@ package apigw.app;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Readiness = a valid configuration snapshot is loaded. The gateway is never ready with an empty
- * config; until the config worker publishes its first snapshot, {@link #reason()} says why.
+ * Readiness = a valid configuration snapshot is loaded and the gateway is not shutting down. The
+ * gateway is never ready with an empty config; until the first snapshot is published,
+ * {@link #reason()} says why. Shutting down is sticky: a later publish does not make it ready again.
  */
 final class Readiness {
+
+    static final String SHUTTING_DOWN = "shutting down";
 
     private final AtomicReference<String> notReadyReason = new AtomicReference<>("no configuration snapshot loaded");
 
@@ -19,11 +22,16 @@ final class Readiness {
         return notReadyReason.get();
     }
 
+    /** A snapshot was published. No effect once shutdown started. */
     void markReady() {
-        notReadyReason.set(null);
+        notReadyReason.updateAndGet(r -> SHUTTING_DOWN.equals(r) ? r : null);
     }
 
     void markNotReady(String reason) {
-        notReadyReason.set(reason);
+        notReadyReason.updateAndGet(r -> SHUTTING_DOWN.equals(r) ? r : reason);
+    }
+
+    void markShuttingDown() {
+        notReadyReason.set(SHUTTING_DOWN);
     }
 }

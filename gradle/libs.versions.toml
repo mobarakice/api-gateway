@@ -1,6 +1,7 @@
 # Every dependency and plugin version lives here. Verified live on 2026-11-18 (Maven Central,
 # Gradle Plugin Portal). Native Image support noted per entry; see docs/adr/ for decisions.
 [versions]
+jmh = "1.37"
 java = "25"
 vertx = "5.2.3"            # ships native-image metadata; reachability repo: io.vertx/vertx-core
 netty = "4.2.20.Final"     # aligned with Vert.x 5.2.3 BOM; ships native-image metadata
@@ -18,6 +19,8 @@ graalvmNative = "1.1.19"
 etcdImage = "gcr.io/etcd-development/etcd:v3.7.3"  # official image, latest stable 3.x (2026-11-18)
 
 [libraries]
+jmh-core = { module = "org.openjdk.jmh:jmh-core", version.ref = "jmh" }
+jmh-generator = { module = "org.openjdk.jmh:jmh-generator-annprocess", version.ref = "jmh" }
 vertx-bom = { module = "io.vertx:vertx-dependencies", version.ref = "vertx" }
 vertx-core = { module = "io.vertx:vertx-core" }
 vertx-web-client = { module = "io.vertx:vertx-web-client" }

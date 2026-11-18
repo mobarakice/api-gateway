@@ -17,7 +17,7 @@ Inspected 2026-11-18 on the development host. Re-run the commands at the bottom 
 | Tool | Found | Use |
 |---|---|---|
 | JDK (default on PATH) | OpenJDK 25.0.2+10 | Not used by the build; Gradle toolchains select GraalVM |
-| GraalVM | Oracle GraalVM 25+37.1 (`native-image 25 2025-09-16`, Serial GC default, G1 available on Linux only) at `~/Library/Java/JavaVirtualMachines/graalvm-jdk-25` — not on PATH | Build toolchain for JVM and native. Registered via `org.gradle.java.installations.paths` / `GRAALVM_HOME` |
+| GraalVM | Oracle GraalVM **25.0.4+7.1** at `~/Library/Java/JavaVirtualMachines/graalvm-jdk-25.0.4+7.1` (installed 2026-11-18, checksum verified, quarantine attribute removed). 25+37.1 is still present but no longer selected. Not on PATH | Build toolchain for JVM and native, auto-detected by Gradle (`vendor = ORACLE`, `nativeImageCapable`) |
 | Gradle | 9.7.0 (system) | Only to generate the wrapper; always `./gradlew` afterwards |
 | Node.js / pnpm | v22.13.0 / 10.2.1 | Admin console |
 | git | 2.54.0 | Repository initialised locally on `main`, no remote |
@@ -60,7 +60,8 @@ Inspected 2026-11-18 on the development host. Re-run the commands at the bottom 
 - The native binary built here is a macOS/arm64 binary. Shipping images are Linux binaries built inside
   a Docker build stage (`deployment/docker/`), so container tests use those, not the macOS binary.
 - G1 for Native Image is Linux-only; GC comparison (ADR 0008) runs in Linux containers / hosts.
-- The installed GraalVM is 25 GA (25+37). Moving to the latest 25.0.x update is tracked in the risk register.
+- GraalVM was upgraded to 25.0.4 at the start of M2. With it the reachability metadata repository works
+  (`-Pgw.metadataRepository=true`, verified); it stays off by default because no dependency needs it.
 - Blockers recorded in `PROGRESS.md`: reference hosts for M10, a Kubernetes cluster for multi-replica tests.
 
 ## Commands used

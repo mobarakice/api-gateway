@@ -1,5 +1,8 @@
 package apigw.app;
 
+import apigw.core.pipeline.Pipeline;
+import apigw.core.snapshot.SnapshotHolder;
+import apigw.proxy.HttpForwarder;
 import io.vertx.core.Future;
 import io.vertx.core.VerticleBase;
 import io.vertx.core.http.HttpServer;
@@ -19,16 +22,20 @@ final class TrafficVerticle extends VerticleBase {
 
     private final BootstrapConfig config;
     private final ListenerPorts ports;
+    private final SnapshotHolder snapshots;
     private final List<HttpServer> servers = new ArrayList<>(2);
+    private HttpForwarder forwarder;
 
-    TrafficVerticle(BootstrapConfig config, ListenerPorts ports) {
+    TrafficVerticle(BootstrapConfig config, ListenerPorts ports, SnapshotHolder snapshots) {
         this.config = config;
         this.ports = ports;
+        this.snapshots = snapshots;
     }
 
     @Override
     public Future<?> start() {
-        TrafficHandler handler = new TrafficHandler();
+        forwarder = new HttpForwarder(vertx);
+        Pipeline handler = new Pipeline(snapshots, forwarder);
         HttpServer plain = vertx.createHttpServer(baseOptions(config.httpPort())
                 .setHttp2ClearTextEnabled(true))
                 .requestHandler(handler);
@@ -65,7 +72,7 @@ final class TrafficVerticle extends VerticleBase {
             // Stops accepting, lets in-flight requests finish up to the grace period, then closes.
             closing.add(server.shutdown(grace));
         }
-        return Future.all(closing);
+        return Future.all(closing).onComplete(ignored -> forwarder.close());
     }
 
     private HttpServerOptions baseOptions(int port) {

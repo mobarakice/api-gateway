@@ -15,12 +15,13 @@ java {
 }
 
 
-// Vert.x 5.2 depends on Netty's HTTP/3, QUIC and tcnative (OpenSSL) class jars. The gateway uses
+// Vert.x 5.2 depends on Netty's HTTP/3, native QUIC and tcnative (OpenSSL) jars. The gateway uses
 // JDK TLS and no HTTP/3 (ADR 0003), so they are excluded: smaller image, smaller attack surface,
 // and no build-time initialisation of tcnative classes in Native Image.
+// netty-codec-classes-quic stays: Vert.x's ConnectionBase.remoteAddress() does `instanceof QuicChannel`,
+// so without it every remoteAddress() call throws NoClassDefFoundError (found in M2).
 configurations.configureEach {
     exclude(group = "io.netty", module = "netty-codec-http3")
-    exclude(group = "io.netty", module = "netty-codec-classes-quic")
     exclude(group = "io.netty", module = "netty-codec-native-quic")
     exclude(group = "io.netty", module = "netty-tcnative-classes")
 }

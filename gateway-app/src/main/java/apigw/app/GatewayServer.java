@@ -1,5 +1,6 @@
 package apigw.app;
 
+import apigw.core.snapshot.SnapshotHolder;
 import io.vertx.core.DeploymentOptions;
 import io.vertx.core.Future;
 import io.vertx.core.ThreadingModel;
@@ -24,15 +25,17 @@ public final class GatewayServer {
     private final Vertx vertx;
     private final BootstrapConfig config;
     private final Readiness readiness;
+    private final SnapshotHolder snapshots;
     private final ListenerPorts ports = new ListenerPorts();
     private final List<String> deployments = new ArrayList<>();
     private final AtomicBoolean stopping = new AtomicBoolean();
     private HttpServer statusServer;
 
-    GatewayServer(Vertx vertx, BootstrapConfig config, Readiness readiness) {
+    GatewayServer(Vertx vertx, BootstrapConfig config, Readiness readiness, SnapshotHolder snapshots) {
         this.vertx = Objects.requireNonNull(vertx);
         this.config = Objects.requireNonNull(config);
         this.readiness = Objects.requireNonNull(readiness);
+        this.snapshots = Objects.requireNonNull(snapshots);
     }
 
     /** Binds all listeners. Completes when every event loop is accepting. */
@@ -69,7 +72,7 @@ public final class GatewayServer {
         DeploymentOptions options = new DeploymentOptions()
                 .setInstances(instances)
                 .setThreadingModel(ThreadingModel.EVENT_LOOP);
-        return vertx.deployVerticle(() -> new TrafficVerticle(cfg, ports), options)
+        return vertx.deployVerticle(() -> new TrafficVerticle(cfg, ports, snapshots), options)
                 .onSuccess(id -> {
                     synchronized (deployments) {
                         deployments.add(id);
@@ -82,7 +85,7 @@ public final class GatewayServer {
         if (!stopping.compareAndSet(false, true)) {
             return Future.succeededFuture();
         }
-        readiness.markNotReady("shutting down");
+        readiness.markShuttingDown();
         List<Future<Void>> undeploying = new ArrayList<>();
         synchronized (deployments) {
             for (String id : deployments) {
