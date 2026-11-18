@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Every exclusion states why. Keep this list short. -->
+<FindBugsFilter>
+    <!-- Records and immutable value types expose List/Map fields that are made unmodifiable
+         (List.copyOf / Map.copyOf) in compact constructors; SpotBugs cannot see that. -->
+    <Match>
+        <Bug pattern="EI_EXPOSE_REP,EI_EXPOSE_REP2"/>
+    </Match>
+    <!-- Test code: JUnit lifecycle fields and assertions trip these patterns by design. -->
+    <Match>
+        <Class name="~.*Test(\$.*)?"/>
+        <Bug pattern="NP_NONNULL_PARAM_VIOLATION,RV_RETURN_VALUE_IGNORED_NO_SIDE_EFFECT,SIC_INNER_SHOULD_BE_STATIC"/>
+    </Match>
+</FindBugsFilter>

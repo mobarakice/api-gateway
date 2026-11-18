@@ -43,6 +43,17 @@ Inspected 2026-11-18 on the development host. Re-run the commands at the bottom 
 | Admin console stack | React + TypeScript + Vite, pnpm | Default |
 | Kubernetes target | Any CNCF-conformant cluster >= 1.30 | Default |
 
+## Found during M1
+
+- The Gradle 9.9.1 wrapper distribution downloads very slowly from its CDN, and the wrapper hit a
+  connect timeout. The zip was fetched with curl, checked against the published SHA-256, and placed
+  in the wrapper cache. The wrapper pins `distributionSha256Sum`.
+- GraalVM 25.0.0 (25+37.1) is rejected by native-build-tools 1.1.19 when the reachability metadata
+  repository is enabled: "provides a reachability-metadata schema, but your GraalVM installation does
+  not". The repository is now opt-in. Upgrading to the latest 25.0.x is recommended.
+- On macOS, Netty logs a WARN about the missing `netty-resolver-dns-native-macos`. It falls back to
+  system DNS settings. Linux images are not affected.
+
 ## Consequences
 
 - Numbers measured on this Mac are labelled **dev host** and are never reported as reference results.

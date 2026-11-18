@@ -1,0 +1,2 @@
+# Reviewed OSV advisories that do not apply. One ID per line followed by "# reason, reviewer, date".
+# An entry without a reason is not allowed.

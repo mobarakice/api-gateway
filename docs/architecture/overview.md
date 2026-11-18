@@ -38,7 +38,8 @@ flowchart LR
 | `gateway-app` | `main`, constructor wiring, server bootstrap, Native Image metadata | all gateway modules |
 | `control-plane` | Admin API, authn/authz, validation, change sets, publish/rollback, migrations, audit | `config-model` |
 | `admin-console` | React + TS console (pnpm, not Gradle) | Admin API |
-| `integration-tests` | Testcontainers suites (etcd, Redis, gateway JVM + native container) | all |
+| `test-support` | Test-only PKI and etcd Testcontainers fixtures | BouncyCastle, Testcontainers |
+| `integration-tests` | Testcontainers suites against the gateway process (JVM and native binary) | all |
 | `benchmarks` | JMH microbenchmarks | `gateway-core`, `gateway-plugins`, `gateway-proxy` |
 
 ## Request flow
@@ -102,7 +103,7 @@ sequenceDiagram
 | JWKS / OIDC discovery refresh | Vert.x WebClient (async), timer on a worker context | Refreshed off the hot path; unknown-`kid` refresh rate limited |
 | Active health checks | Vert.x timers + async client | Results published as immutable state |
 | Redis client | Async (Vert.x Redis client) | Timeout + fail-open/closed on every call |
-| Logging | Async appender with bounded queue | Drops (and counts) instead of blocking when full |
+| Logging | Caller renders; one `gw-log-writer` daemon drains a bounded queue | Drops (and counts) instead of blocking when full |
 | Control plane handlers | Virtual threads after native verification, otherwise a bounded worker pool | Not latency-critical |
 
 ## Key design choices
@@ -136,6 +137,7 @@ M8 observability, M9 deployment, M10 benchmarks.
 | [0004](../adr/0004-no-spring-boot.md) | No Spring Boot | Accepted |
 | [0005](../adr/0005-json-library.md) | JSON with Jackson | Accepted |
 | [0006](../adr/0006-metrics-and-tracing.md) | Micrometer/Prometheus metrics, OpenTelemetry tracing | Accepted |
-| [0007](../adr/0007-logging-backend.md) | Logging backend | Proposed (native check in M1/M8) |
+| [0007](../adr/0007-logging-backend.md) | Logging backend: own SLF4J JSON provider | Accepted |
 | [0008](../adr/0008-native-gc.md) | Native Image GC | Proposed (measured in M10) |
-| [0009](../adr/0009-etcd-client.md) | etcd client | Proposed (decided by the M1 spike) |
+| [0009](../adr/0009-etcd-client.md) | etcd client: v3 HTTP/JSON gateway over Vert.x | Accepted |
+| [0010](../adr/0010-dependency-vulnerability-scan.md) | Dependency scan via OSV | Accepted |

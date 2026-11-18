@@ -18,9 +18,10 @@ if you change a command, module, or convention, update this file in the same com
 | `gateway-plugins/` | Built-in plugins: auth, authz, rate limit, cache, CORS, transforms, IP rules |
 | `gateway-proxy/` | Upstream pools, load balancing, circuit breaker, retries, streaming proxy |
 | `gateway-config/` | etcd client wrapper, config worker, snapshot compiler, last-known-good store |
-| `gateway-observability/` | Metrics, structured logging, tracing |
+| `gateway-observability/` | Metrics, tracing, and the SLF4J JSON log provider (ADR 0007) |
 | `gateway-app/` | `main`, wiring, Native Image metadata |
 | `control-plane/` | Admin API, validation, change sets, etcd writer, audit |
+| `test-support/` | Test-only helpers: throwaway PKI (`TestPki`), etcd Testcontainers node with TLS + auth + gateway role. Never shipped |
 | `admin-console/` | React + TypeScript frontend (pnpm; not a Gradle project) |
 | `integration-tests/`, `benchmarks/` | Testcontainers suites; JMH and load scenarios |
 | `deployment/` | Dockerfiles, Compose, Kustomize base and overlays |
@@ -34,9 +35,12 @@ if you change a command, module, or convention, update this file in the same com
 ./gradlew build                      # compile, unit tests, Checkstyle, SpotBugs, dependency scan
 ./gradlew :gateway-app:run           # gateway on the JVM (dev)
 ./gradlew :control-plane:run         # Admin API on the JVM (dev)
-./gradlew :integration-tests:test    # Testcontainers suites (needs Docker)
-./gradlew :gateway-app:nativeCompile # native binary -> gateway-app/build/native/nativeCompile/
-./gradlew nativeTest                 # tests against native code
+./gradlew :integration-tests:integrationTest        # Testcontainers suites, gateway as JVM process (needs Docker)
+./gradlew :integration-tests:nativeIntegrationTest  # same suites against the native binary (needs Docker)
+./gradlew :gateway-app:nativeCompile # native binary -> gateway-app/build/native/nativeCompile/gateway
+./gradlew nativeTest                 # unit tests compiled and run as a native image
+./gradlew :gateway-app:installDist   # jvm-prod distribution -> gateway-app/build/install/gateway/
+gateway-app/build/native/nativeCompile/gateway check-etcd --help   # etcd connectivity/role check
 
 # Local stack: etcd, Redis, echo upstream, gateway, control plane, console
 docker compose -f deployment/docker/compose.yml up -d
@@ -51,6 +55,9 @@ pnpm e2e          # Playwright against the Compose stack
 # Kubernetes manifests
 kustomize build deployment/kubernetes/overlays/<env> | kubeconform -strict -
 ```
+
+`./gradlew build` needs network (OSV dependency scan, ADR 0010) but not Docker.
+The toolchain is Oracle GraalVM 25 (auto-detected via `nativeImageCapable`; never auto-downloaded).
 
 Before saying a change is done, run `./gradlew build` and the tests for what you touched.
 For anything in the request path or config worker, also run the native build and `nativeTest`.
@@ -104,6 +111,9 @@ For anything in the request path or config worker, also run the native build and
   metadata under `gateway-app/src/main/resources/META-INF/native-image/`.
 - Before adding a dependency, confirm Native Image support (official docs or the GraalVM
   Reachability Metadata repository) and note it in the PR/commit message.
+- Required flags live in `build-logic/.../gw.native-conventions.gradle.kts` (e.g. `-H:+SharedArenaSupport`
+  for Netty on JDK 25 — ADR 0008). Netty's HTTP/3, QUIC and tcnative jars are excluded build-wide.
+- The GraalVM reachability metadata repository is off by default (`-Pgw.metadataRepository=true`).
 - The tracing agent is for discovery only. Review and trim what it generates before committing.
 - A feature is not done until it works in the native binary, not just on the JVM.
 
@@ -116,7 +126,7 @@ For anything in the request path or config worker, also run the native build and
   Prove optimizations with a JMH benchmark in `benchmarks/`.
 - Errors to clients: generic body with a request ID (RFC 9457 problem details on the Admin API).
   Never leak upstream hosts, IPs, stack traces, or config details.
-- Logging: structured JSON via SLF4J. Never log tokens, credentials, keys, secrets, or bodies.
+- Logging: structured JSON via SLF4J (our provider in `gateway-observability`; no Logback/Log4j2). Never log tokens, credentials, keys, secrets, or bodies.
   Use route ID, never raw path, as a metric label.
 - Frontend: TypeScript strict, no `any` without a comment explaining why. API state via TanStack
   Query. Plugin forms render from the schema served by `GET /admin/v1/plugins/{name}/schema`.

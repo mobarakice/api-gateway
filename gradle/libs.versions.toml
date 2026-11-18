@@ -1,0 +1,44 @@
+# Every dependency and plugin version lives here. Verified live on 2026-11-18 (Maven Central,
+# Gradle Plugin Portal). Native Image support noted per entry; see docs/adr/ for decisions.
+[versions]
+java = "25"
+vertx = "5.2.3"            # ships native-image metadata; reachability repo: io.vertx/vertx-core
+netty = "4.2.20.Final"     # aligned with Vert.x 5.2.3 BOM; ships native-image metadata
+jackson = "2.23.0"         # reachability repo: com.fasterxml.jackson.core/jackson-databind
+slf4j = "2.0.20"
+junit = "6.1.3"
+assertj = "3.27.7"
+awaitility = "4.3.0"
+testcontainers = "2.0.5"   # test scope only, JVM tests (not in native image)
+bouncycastle = "1.87"      # test scope only: generates throwaway TLS material for tests
+checkstyle = "14.4.0"
+spotbugs = "4.10.5"
+spotbugsPlugin = "6.5.13"
+graalvmNative = "1.1.19"
+etcdImage = "gcr.io/etcd-development/etcd:v3.7.3"  # official image, latest stable 3.x (2026-11-18)
+
+[libraries]
+vertx-bom = { module = "io.vertx:vertx-dependencies", version.ref = "vertx" }
+vertx-core = { module = "io.vertx:vertx-core" }
+vertx-web-client = { module = "io.vertx:vertx-web-client" }
+# Annotation-only jars referenced from Vert.x class files; compileOnly so javac -Xlint stays clean.
+vertx-codegen-api = { module = "io.vertx:vertx-codegen-api" }
+vertx-codegen-json = { module = "io.vertx:vertx-codegen-json" }
+netty-bom = { module = "io.netty:netty-bom", version.ref = "netty" }
+jackson-bom = { module = "com.fasterxml.jackson:jackson-bom", version.ref = "jackson" }
+jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind" }
+slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
+junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter" }
+junit-launcher = { module = "org.junit.platform:junit-platform-launcher" }
+assertj-core = { module = "org.assertj:assertj-core", version.ref = "assertj" }
+awaitility = { module = "org.awaitility:awaitility", version.ref = "awaitility" }
+testcontainers-bom = { module = "org.testcontainers:testcontainers-bom", version.ref = "testcontainers" }
+testcontainers-core = { module = "org.testcontainers:testcontainers" }
+testcontainers-junit = { module = "org.testcontainers:testcontainers-junit-jupiter" }
+bouncycastle-pkix = { module = "org.bouncycastle:bcpkix-jdk18on", version.ref = "bouncycastle" }
+spotbugs-annotations = { module = "com.github.spotbugs:spotbugs-annotations", version.ref = "spotbugs" }
+
+# build-logic classpath (Gradle plugins as libraries)
+gradleplugin-spotbugs = { module = "com.github.spotbugs.snom:spotbugs-gradle-plugin", version.ref = "spotbugsPlugin" }
+gradleplugin-graalvm-native = { module = "org.graalvm.buildtools:native-gradle-plugin", version.ref = "graalvmNative" }
