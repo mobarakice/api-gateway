@@ -11,13 +11,16 @@ import java.util.List;
  * @param viaName             pseudonym for the {@code Via} header; empty disables it
  * @param defaultTimeouts     timeouts applied where neither route nor service sets one
  * @param maxRequestBodyBytes requests declaring a larger {@code Content-Length} are rejected with 413
+ * @param upstreamAllowCidrs  upstream addresses allowed despite {@link AddressPolicy}'s SSRF deny list
+ *                            (e.g. {@code 10.0.0.0/8} for in-cluster backends)
  */
 public record Settings(
         List<String> trustedProxies,
         List<String> stripRequestHeaders,
         String viaName,
         Timeouts defaultTimeouts,
-        long maxRequestBodyBytes) {
+        long maxRequestBodyBytes,
+        List<String> upstreamAllowCidrs) {
 
     /** Identity headers that only the gateway may set. Clients sending them get them stripped. */
     public static final List<String> DEFAULT_STRIPPED = List.of(
@@ -25,10 +28,11 @@ public record Settings(
             "x-authenticated-scope", "x-credential-identifier", "x-gateway-identity");
 
     public static final Settings DEFAULTS = new Settings(List.of(), DEFAULT_STRIPPED, "apigw",
-            Timeouts.DEFAULTS, 10L * 1024 * 1024);
+            Timeouts.DEFAULTS, 10L * 1024 * 1024, List.of());
 
     public Settings {
         trustedProxies = List.copyOf(trustedProxies);
         stripRequestHeaders = List.copyOf(stripRequestHeaders);
+        upstreamAllowCidrs = List.copyOf(upstreamAllowCidrs);
     }
 }

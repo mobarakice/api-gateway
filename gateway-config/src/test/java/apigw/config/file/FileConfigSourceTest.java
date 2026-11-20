@@ -21,7 +21,8 @@ import org.junit.jupiter.api.io.TempDir;
 class FileConfigSourceTest {
 
     private static String config(long revision) {
-        return "{\"schemaVersion\":1,\"revision\":" + revision + ",\"upstreams\":[{\"id\":\"u\",\"targets\":"
+        return "{\"schemaVersion\":1,\"settings\":{\"upstreamAllowCidrs\":[\"127.0.0.0/8\",\"::1/128\"]},"
+                + "\"revision\":" + revision + ",\"upstreams\":[{\"id\":\"u\",\"targets\":"
                 + "[{\"host\":\"127.0.0.1\",\"port\":9}]}],\"services\":[{\"id\":\"s\",\"upstreamId\":\"u\"}],"
                 + "\"routes\":[{\"id\":\"r\",\"path\":\"/\",\"serviceId\":\"s\"}]}";
     }

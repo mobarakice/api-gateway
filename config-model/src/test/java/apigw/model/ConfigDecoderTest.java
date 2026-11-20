@@ -12,7 +12,7 @@ class ConfigDecoderTest {
             {
               "schemaVersion": 1,
               "revision": 7,
-              "settings": {"trustedProxies": ["10.0.0.0/8"], "viaName": "edge"},
+              "settings": {"trustedProxies": ["10.0.0.0/8"], "viaName": "edge", "upstreamAllowCidrs": ["127.0.0.0/8"]},
               "upstreams": [{"id": "u1", "targets": [{"host": "127.0.0.1", "port": 9000, "weight": 2}],
                              "balancer": "weighted-round-robin", "pool": {"maxConnections": 8}}],
               "services": [{"id": "s1", "upstreamId": "u1", "timeouts": {"connectMs": 500}}],

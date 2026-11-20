@@ -10,6 +10,7 @@ import java.util.Optional;
 public final class PluginRegistry {
 
     private final Map<String, PluginFactory> byName;
+    private final Map<String, Integer> ordinals;
 
     public PluginRegistry(List<PluginFactory> factories) {
         Map<String, PluginFactory> m = new LinkedHashMap<>();
@@ -22,6 +23,21 @@ public final class PluginRegistry {
             }
         }
         this.byName = Map.copyOf(m);
+        Map<String, Integer> o = new LinkedHashMap<>();
+        for (String name : m.keySet()) {
+            o.put(name, o.size());
+        }
+        this.ordinals = Map.copyOf(o);
+    }
+
+    /** Dense index of a registered plugin, stable for this registry; -1 if unknown. */
+    public int ordinal(String name) {
+        Integer i = ordinals.get(name);
+        return i == null ? -1 : i;
+    }
+
+    public int size() {
+        return byName.size();
     }
 
     public Optional<PluginFactory> find(String name) {

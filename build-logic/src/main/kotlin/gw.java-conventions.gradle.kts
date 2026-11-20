@@ -43,6 +43,16 @@ dependencies {
     "testRuntimeOnly"(libs.findLibrary("junit-launcher").get())
 }
 
+// Modules with test fixtures (java-test-fixtures) get the same version platforms.
+pluginManager.withPlugin("java-test-fixtures") {
+    dependencies {
+        "testFixturesImplementation"(platform(libs.findLibrary("vertx-bom").get()))
+        "testFixturesImplementation"(platform(libs.findLibrary("netty-bom").get()))
+        "testFixturesImplementation"(platform(libs.findLibrary("jackson-bom").get()))
+        "testFixturesCompileOnly"(libs.findLibrary("spotbugs-annotations").get())
+    }
+}
+
 tasks.withType<JavaCompile>().configureEach {
     options.encoding = "UTF-8"
     options.release = libs.findVersion("java").get().requiredVersion.toInt()

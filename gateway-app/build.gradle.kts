@@ -16,6 +16,7 @@ dependencies {
     implementation(libs.jackson.databind)
     implementation(project(":gateway-observability"))
     testImplementation(libs.awaitility)
+    testImplementation(testFixtures(project(":gateway-plugins")))
 }
 
 application {

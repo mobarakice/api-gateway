@@ -21,7 +21,8 @@ public record Upstream(
         Balancer balancer,
         String hashKey,
         Pool pool,
-        boolean http2) {
+        boolean http2,
+        String tenantId) {
 
     /** Transport to the targets. */
     public enum Scheme { HTTP, HTTPS }

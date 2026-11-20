@@ -16,7 +16,12 @@ public record GatewayConfig(
         List<Route> routes,
         List<Service> services,
         List<Upstream> upstreams,
-        List<PluginRef> globalPlugins) {
+        List<PluginRef> globalPlugins,
+        List<Consumer> consumers,
+        List<Credential> credentials,
+        List<AuthzPolicy> authzPolicies,
+        List<PluginConfigSet> pluginConfigs,
+        List<RevokedToken> revokedTokens) {
 
     /** Highest schema version this build understands. */
     public static final int SUPPORTED_SCHEMA_VERSION = 1;
@@ -26,5 +31,17 @@ public record GatewayConfig(
         services = List.copyOf(services);
         upstreams = List.copyOf(upstreams);
         globalPlugins = List.copyOf(globalPlugins);
+        consumers = List.copyOf(consumers);
+        credentials = List.copyOf(credentials);
+        authzPolicies = List.copyOf(authzPolicies);
+        pluginConfigs = List.copyOf(pluginConfigs);
+        revokedTokens = List.copyOf(revokedTokens);
+    }
+
+    /** Routing objects only (no security objects); convenient for tests and simple file configs. */
+    public GatewayConfig(int schemaVersion, long revision, Settings settings, List<Route> routes,
+            List<Service> services, List<Upstream> upstreams, List<PluginRef> globalPlugins) {
+        this(schemaVersion, revision, settings, routes, services, upstreams, globalPlugins, List.of(), List.of(),
+                List.of(), List.of(), List.of());
     }
 }

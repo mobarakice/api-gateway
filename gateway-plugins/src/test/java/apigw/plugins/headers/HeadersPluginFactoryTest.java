@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test;
 class HeadersPluginFactoryTest {
 
     private static final ObjectMapper JSON = new ObjectMapper();
+    private static final apigw.core.plugin.PluginContext CTX = apigw.core.plugin.PluginContext.empty();
     private final HeadersPluginFactory factory = new HeadersPluginFactory();
 
     private static JsonNode json(String s) throws Exception {
@@ -23,11 +24,12 @@ class HeadersPluginFactoryTest {
 
     @Test
     void compilesToTheNarrowestShape() throws Exception {
-        assertThat(factory.create(json("{\"request\":{\"set\":{\"a\":\"1\"}}}")))
+        assertThat(factory.create(json("{\"request\":{\"set\":{\"a\":\"1\"}}}"), CTX))
                 .isInstanceOf(RequestPlugin.class).isNotInstanceOf(ResponseHeadersPlugin.class);
-        assertThat(factory.create(json("{\"response\":{\"remove\":[\"server\"]}}")))
+        assertThat(factory.create(json("{\"response\":{\"remove\":[\"server\"]}}"), CTX))
                 .isInstanceOf(ResponseHeadersPlugin.class).isNotInstanceOf(RequestPlugin.class);
-        assertThat(factory.create(json("{\"request\":{\"add\":{\"a\":\"1\"}},\"response\":{\"add\":{\"b\":\"2\"}}}")))
+        assertThat(factory.create(json("{\"request\":{\"add\":{\"a\":\"1\"}},\"response\":{\"add\":{\"b\":\"2\"}}}"),
+                CTX))
                 .isInstanceOf(RequestPlugin.class).isInstanceOf(ResponseHeadersPlugin.class);
     }
 
@@ -46,7 +48,7 @@ class HeadersPluginFactoryTest {
     void rejectsUnsafeConfig() {
         assertThatThrownBy(() -> factory.create(json("""
                 {"request": {"set": {"Content-Length": "5", "bad name": "x", "x-ok": "a\\r\\nb"}, "remove": ["host"]},
-                 "response": {"oops": 1}, "extra": true}""")))
+                 "response": {"oops": 1}, "extra": true}"""), CTX))
                 .isInstanceOfSatisfying(PluginConfigException.class, e -> assertThat(e.errors())
                         .extracting(Object::toString).containsExactlyInAnyOrder(
                                 "extra: unknown field",
@@ -56,7 +58,7 @@ class HeadersPluginFactoryTest {
                                 "request.set.x-ok: value must be visible ASCII, space or tab (no CR/LF)",
                                 "request.remove[0]: header 'host' cannot be edited (framing/hop-by-hop)",
                                 "response.oops: unknown field"));
-        assertThatThrownBy(() -> factory.create(json("{}"))).isInstanceOf(PluginConfigException.class)
+        assertThatThrownBy(() -> factory.create(json("{}"), CTX)).isInstanceOf(PluginConfigException.class)
                 .hasMessageContaining("at least one");
     }
 

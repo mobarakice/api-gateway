@@ -24,10 +24,15 @@ public final class CompiledRoute {
     final ResponseHeadersPlugin[] headerFilter;
     final LogPlugin[] log;
     private final RequestPlugin[] requestChain;
+    private final int[] requestSlots;
+    private final int[] headerFilterSlots;
+    private final int[] logSlots;
+    private final String tenantId;
 
     CompiledRoute(String id, String serviceId, CompiledUpstream upstream, ResolvedTimeouts timeouts,
             boolean preserveHost, List<String> paramNames, RequestPlugin[] rewrite, RequestPlugin[] access,
-            RequestPlugin[] beforeProxy, ResponseHeadersPlugin[] headerFilter, LogPlugin[] log) {
+            RequestPlugin[] beforeProxy, ResponseHeadersPlugin[] headerFilter, LogPlugin[] log, int[] requestSlots,
+            int[] headerFilterSlots, int[] logSlots, String tenantId) {
         this.id = id;
         this.serviceId = serviceId;
         this.upstream = upstream;
@@ -40,6 +45,32 @@ public final class CompiledRoute {
         this.headerFilter = headerFilter;
         this.log = log;
         this.requestChain = concat(rewrite, access, beforeProxy);
+        this.requestSlots = requestSlots;
+        this.headerFilterSlots = headerFilterSlots;
+        this.logSlots = logSlots;
+        this.tenantId = tenantId;
+        if (requestSlots.length != requestChain.length || headerFilterSlots.length != headerFilter.length
+                || logSlots.length != log.length) {
+            throw new IllegalArgumentException("slot arrays must parallel the plugin arrays");
+        }
+    }
+
+    /** Plugin ordinal of each {@link #requestChain()} entry, for consumer overrides. Shared; do not modify. */
+    public int[] requestSlots() {
+        return requestSlots;
+    }
+
+    public int[] headerFilterSlots() {
+        return headerFilterSlots;
+    }
+
+    public int[] logSlots() {
+        return logSlots;
+    }
+
+    /** Owning tenant, or null. */
+    public String tenantId() {
+        return tenantId;
     }
 
     public String id() {

@@ -43,7 +43,9 @@ class HttpForwarderTest {
     }
 
     private String config(String upstreamExtra, String routeExtra, String settings) {
-        return "{\"schemaVersion\":1,\"settings\":{" + settings + "},"
+        // Loopback upstreams: allow-listed for the SSRF rules, as any test or dev setup must.
+        String allow = "\"upstreamAllowCidrs\":[\"127.0.0.0/8\"]";
+        return "{\"schemaVersion\":1,\"settings\":{" + (settings.isEmpty() ? allow : settings + "," + allow) + "},"
                 + "\"upstreams\":[{\"id\":\"u\",\"targets\":[{\"host\":\"127.0.0.1\",\"port\":" + a.port + "}]"
                 + upstreamExtra + "},"
                 + "{\"id\":\"two\",\"targets\":[{\"host\":\"127.0.0.1\",\"port\":" + a.port + ",\"weight\":3},"

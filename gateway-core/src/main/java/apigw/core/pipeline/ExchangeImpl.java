@@ -1,6 +1,8 @@
 package apigw.core.pipeline;
 
+import apigw.core.auth.Principal;
 import apigw.core.plugin.LogPlugin;
+import apigw.core.plugin.Plugin;
 import apigw.core.plugin.Outcome;
 import apigw.core.plugin.RequestPlugin;
 import apigw.core.plugin.ResponseHeadersPlugin;
@@ -38,6 +40,9 @@ final class ExchangeImpl implements ProxyExchange {
     private int status;
     private Runnable abortAction;
     private boolean closeAfterResponse;
+    private Principal principal;
+    /** The consumer's plugin overrides by ordinal, or null. */
+    private Plugin[] overrides;
 
     ExchangeImpl(HttpServerRequest request, Snapshot snapshot, CompiledRoute route, int[] params,
             Forwarder forwarder, String requestId, String host, long startNanos) {
@@ -119,8 +124,21 @@ final class ExchangeImpl implements ProxyExchange {
     /** Runs the request chain from the current position, then forwards. */
     void run() {
         RequestPlugin[] chain = route.requestChain();
+        int[] slots = route.requestSlots();
         while (next < chain.length) {
-            RequestPlugin plugin = chain[next++];
+            int i = next++;
+            RequestPlugin plugin = chain[i];
+            Plugin[] o = overrides;
+            if (o != null) {
+                Plugin replacement = o[slots[i]];
+                if (replacement != null) {
+                    if (!(replacement instanceof RequestPlugin rp)) {
+                        // CompiledConsumer.DISABLED, or an override without a request phase.
+                        continue;
+                    }
+                    plugin = rp;
+                }
+            }
             Outcome outcome = invoke(plugin);
             if (outcome == null) {
                 respond(500, "Internal Server Error");
@@ -130,9 +148,70 @@ final class ExchangeImpl implements ProxyExchange {
                 return;
             }
         }
-        if (!responded) {
-            forwarder.forward(this);
+        if (responded) {
+            return;
         }
+        if (route.tenantId() != null && principal == null) {
+            // Tenant routes never serve anonymous requests, even when every auth plugin is optional.
+            respond(401, "Unauthorized");
+            return;
+        }
+        forwarder.forward(this);
+    }
+
+    @Override
+    public Principal principal() {
+        return principal;
+    }
+
+    @Override
+    public Outcome authenticate(Principal p) {
+        String routeTenant = route.tenantId();
+        if (routeTenant != null && !routeTenant.equals(p.tenantId())) {
+            LOG.warn("cross-tenant request denied route={} requestId={} method={} credential={}", route.id(),
+                    requestId, p.method(), p.credentialId());
+            return respond(403, "Forbidden");
+        }
+        principal = p;
+        overrides = p.consumer() == null ? null : p.consumer().overrides();
+        if (p.consumer() != null) {
+            upstreamHeaders.set("x-consumer-id", p.consumer().id());
+            if (!p.consumer().username().isEmpty() && safeHeaderValue(p.consumer().username())) {
+                upstreamHeaders.set("x-consumer-username", p.consumer().username());
+            }
+        }
+        if (p.tenantId() != null) {
+            upstreamHeaders.set("x-tenant-id", p.tenantId());
+        }
+        if (p.subject() != null && safeHeaderValue(p.subject())) {
+            upstreamHeaders.set("x-authenticated-user", p.subject());
+        }
+        if (p.credentialId() != null && safeHeaderValue(p.credentialId())) {
+            upstreamHeaders.set("x-credential-identifier", p.credentialId());
+        }
+        return Outcome.CONTINUE;
+    }
+
+    /** Token claims are attacker-influenced: only visible ASCII (no CR/LF, no controls) goes into a header. */
+    private static boolean safeHeaderValue(String v) {
+        if (v.length() > 1024) {
+            return false;
+        }
+        for (int i = 0; i < v.length(); i++) {
+            char c = v.charAt(i);
+            if (c < 0x20 || c > 0x7e) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    @Override
+    public Outcome respond(int code, String title, String headerName, String headerValue) {
+        if (!finished && !responded && !request.response().headWritten()) {
+            request.response().putHeader(headerName, headerValue);
+        }
+        return respond(code, title);
     }
 
     @Override
@@ -225,7 +304,16 @@ final class ExchangeImpl implements ProxyExchange {
         responded = true;
         status = code;
         ResponseHeadersPlugin[] filters = route.headerFilter();
-        for (ResponseHeadersPlugin f : filters) {
+        int[] slots = route.headerFilterSlots();
+        Plugin[] o = overrides;
+        for (int i = 0; i < filters.length; i++) {
+            ResponseHeadersPlugin f = filters[i];
+            if (o != null && o[slots[i]] != null) {
+                if (!(o[slots[i]] instanceof ResponseHeadersPlugin r)) {
+                    continue;
+                }
+                f = r;
+            }
             invoke(f, code, headers);
         }
         headers.set(Problems.REQUEST_ID, requestId);
@@ -276,7 +364,16 @@ final class ExchangeImpl implements ProxyExchange {
         }
         long duration = System.nanoTime() - startNanos;
         int s = status == 0 ? request.response().getStatusCode() : status;
-        for (LogPlugin p : logs) {
+        int[] slots = route.logSlots();
+        Plugin[] o = overrides;
+        for (int i = 0; i < logs.length; i++) {
+            LogPlugin p = logs[i];
+            if (o != null && o[slots[i]] != null) {
+                if (!(o[slots[i]] instanceof LogPlugin l)) {
+                    continue;
+                }
+                p = l;
+            }
             invoke(p, s, duration);
         }
     }

@@ -31,6 +31,8 @@ final class ProxyHarness {
     final SnapshotHolder holder = new SnapshotHolder();
     final List<Echo> upstreams = new ArrayList<>();
     int gatewayPort;
+    /** DNS for the gateway's upstream resolution; null = the platform resolver. */
+    TargetResolver.Lookup lookup;
 
     /** An echo upstream. Paths: /status/{code}, .../slow/{ms}, /bytes/{n}, anything else echoes. */
     static final class Echo {
@@ -114,7 +116,8 @@ final class ProxyHarness {
 
             @Override
             public Future<?> start() {
-                forwarder = new HttpForwarder(vertx);
+                forwarder = lookup == null ? new HttpForwarder(vertx)
+                        : new HttpForwarder(vertx, new TargetResolver(vertx, lookup));
                 return vertx.createHttpServer(options.setHost("127.0.0.1").setPort(0))
                         .requestHandler(new Pipeline(holder, forwarder)).listen()
                         .onSuccess(s -> port[0] = s.actualPort());

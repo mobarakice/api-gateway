@@ -18,7 +18,8 @@ class ConfigValidatorTest {
     }
 
     private static String doc(String routes, String services, String upstreams) {
-        return "{\"schemaVersion\":1,\"routes\":[" + routes + "],\"services\":[" + services + "],\"upstreams\":["
+        return "{\"schemaVersion\":1,\"settings\":{\"upstreamAllowCidrs\":[\"127.0.0.0/8\",\"::1/128\"]},"
+                + "\"routes\":[" + routes + "],\"services\":[" + services + "],\"upstreams\":["
                 + upstreams + "]}";
     }
 

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://apigw.local/schemas/plugins/key-auth.json",
+  "title": "key-auth plugin",
+  "description": "Authenticates API keys '<keyId>.<secret>' against credentials/{consumerId}/{id} (salted SHA-256, constant-time compare).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "header": { "type": "string", "default": "x-api-key", "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$" },
+    "optional": { "type": "boolean", "default": false },
+    "hideCredentials": { "type": "boolean", "default": true, "description": "Remove the key header before proxying." }
+  }
+}

@@ -1,7 +1,12 @@
 package apigw.config.worker;
 
 import apigw.config.etcd.KeyValue;
+import apigw.model.AuthzPolicy;
 import apigw.model.ConfigDecoder;
+import apigw.model.Consumer;
+import apigw.model.Credential;
+import apigw.model.PluginConfigSet;
+import apigw.model.RevokedToken;
 import apigw.model.ConfigError;
 import apigw.model.ConfigException;
 import apigw.model.GatewayConfig;
@@ -35,9 +40,8 @@ public final class EtcdSnapshotBuilder {
     public static final List<String> CONFIG_SUBTREES = List.of("meta/", "routes/", "services/", "upstreams/",
             "global-plugins/", "consumers/", "credentials/", "plugin-configs/", "policies/", "certificates/");
 
-    /** Subtrees read and kept (LKG, change detection) but consumed only from M4 on. */
-    static final Set<String> NOT_YET_COMPILED = Set.of("consumers/", "credentials/", "plugin-configs/",
-            "policies/", "certificates/");
+    /** Subtrees read and kept (LKG, change detection) but not compiled yet: certificates arrive with TLS reload. */
+    static final Set<String> NOT_YET_COMPILED = Set.of("certificates/");
 
     static final String SCHEMA_VERSION_KEY = "meta/schema-version";
     static final String SETTINGS_KEY = "meta/settings";
@@ -45,7 +49,9 @@ public final class EtcdSnapshotBuilder {
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final Set<String> ENVELOPE = Set.of("id", "kind", "schemaVersion", "tenantId", "updatedAt",
             "updatedBy", "spec");
-    private static final Pattern INDEXED = Pattern.compile("^(routes|services|upstreams|globalPlugins)\\[(\\d+)]");
+    private static final Pattern INDEXED = Pattern.compile(
+            "^(routes|services|upstreams|globalPlugins|consumers|credentials|authzPolicies|pluginConfigs"
+                    + "|revokedTokens)\\[(\\d+)]");
 
     private EtcdSnapshotBuilder() {
     }
@@ -69,6 +75,11 @@ public final class EtcdSnapshotBuilder {
         List<Service> services = new ArrayList<>();
         List<Upstream> upstreams = new ArrayList<>();
         List<PluginRef> global = new ArrayList<>();
+        List<Consumer> consumers = new ArrayList<>();
+        List<Credential> credentials = new ArrayList<>();
+        List<AuthzPolicy> policies = new ArrayList<>();
+        List<PluginConfigSet> pluginConfigs = new ArrayList<>();
+        List<RevokedToken> revoked = new ArrayList<>();
         Settings settings = Settings.DEFAULTS;
         Integer schemaVersion = null;
         List<KeyValue> sorted = new ArrayList<>(kvs);
@@ -93,6 +104,22 @@ public final class EtcdSnapshotBuilder {
                 } else if (rel.startsWith("global-plugins/")) {
                     global.add(ConfigDecoder.decodePluginRef(specWithId(kv, rel, "GlobalPlugin", "name"),
                             rel + ".spec"));
+                } else if (rel.startsWith("consumers/")) {
+                    consumers.add(ConfigDecoder.decodeConsumer(specWithId(kv, rel, "Consumer", "id"), rel + ".spec"));
+                } else if (rel.startsWith("credentials/")) {
+                    credentials.add(credential(kv, rel));
+                } else if (rel.startsWith("plugin-configs/")) {
+                    pluginConfigs.add(ConfigDecoder.decodePluginConfig(specWithId(kv, rel, "PluginConfig", "id"),
+                            rel + ".spec"));
+                } else if (rel.startsWith("policies/authz/")) {
+                    policies.add(ConfigDecoder.decodeAuthzPolicy(specWithId(kv, rel, "AuthzPolicy", "id"),
+                            rel + ".spec"));
+                } else if (rel.startsWith("policies/revoked-tokens/")) {
+                    revoked.add(ConfigDecoder.decodeRevokedToken(specWithId(kv, rel, "RevokedToken", "id"),
+                            rel + ".spec"));
+                } else if (rel.startsWith("policies/")) {
+                    errors.add(new ConfigError(rel, "unknown policy type (expected policies/authz/ or "
+                            + "policies/revoked-tokens/)"));
                 } else if (notYetCompiled(rel)) {
                     envelope(kv, rel);
                 }
@@ -106,7 +133,8 @@ public final class EtcdSnapshotBuilder {
         if (!errors.isEmpty()) {
             throw new ConfigException(errors);
         }
-        return new GatewayConfig(schemaVersion, revision, settings, routes, services, upstreams, global);
+        return new GatewayConfig(schemaVersion, revision, settings, routes, services, upstreams, global, consumers,
+                credentials, policies, pluginConfigs, revoked);
     }
 
     private static boolean notYetCompiled(String rel) {
@@ -168,10 +196,32 @@ public final class EtcdSnapshotBuilder {
         return env.get("spec");
     }
 
-    /** The spec with the key's id injected under {@code idField}, after checking kind and id. */
+    /** {@code credentials/{consumerId}/{id}}: the consumer comes from the key too. */
+    private static Credential credential(KeyValue kv, String rel) throws ConfigException {
+        String[] parts = rel.split("/", -1);
+        if (parts.length != 3 || parts[1].isEmpty() || parts[2].isEmpty()) {
+            throw new ConfigException(List.of(new ConfigError(rel, "must be credentials/{consumerId}/{id}")));
+        }
+        ObjectNode spec = specWithId(kv, rel, "Credential", "id", parts[2]);
+        if (spec.has("consumerId")) {
+            throw new ConfigException(List.of(new ConfigError(rel + ".spec.consumerId",
+                    "comes from the key; do not repeat it in spec")));
+        }
+        spec.put("consumerId", parts[1]);
+        return ConfigDecoder.decodeCredential(spec, rel + ".spec");
+    }
+
     private static ObjectNode specWithId(KeyValue kv, String rel, String kind, String idField)
             throws ConfigException {
-        String id = rel.substring(rel.indexOf('/') + 1);
+        return specWithId(kv, rel, kind, idField, rel.substring(rel.lastIndexOf('/') + 1));
+    }
+
+    /**
+     * The spec with the key's id injected under {@code idField} and the envelope's {@code tenantId} (if any)
+     * under {@code tenantId}, after checking kind and id.
+     */
+    private static ObjectNode specWithId(KeyValue kv, String rel, String kind, String idField, String id)
+            throws ConfigException {
         JsonNode env = envelope(kv, rel);
         checkKindAndId(env, rel, kind, id);
         ObjectNode spec = ((ObjectNode) env.get("spec")).deepCopy();
@@ -180,6 +230,13 @@ public final class EtcdSnapshotBuilder {
                     "comes from the key; do not repeat it in spec")));
         }
         spec.put(idField, id);
+        if (spec.has("tenantId")) {
+            throw new ConfigException(List.of(new ConfigError(rel + ".spec.tenantId",
+                    "comes from the envelope's tenantId; do not repeat it in spec")));
+        }
+        if (env.hasNonNull("tenantId")) {
+            spec.put("tenantId", env.get("tenantId").asText());
+        }
         return spec;
     }
 
@@ -214,6 +271,16 @@ public final class EtcdSnapshotBuilder {
                 case "services" -> i < config.services().size() ? "services/" + config.services().get(i).id() : null;
                 case "upstreams" -> i < config.upstreams().size()
                         ? "upstreams/" + config.upstreams().get(i).id() : null;
+                case "consumers" -> i < config.consumers().size()
+                        ? "consumers/" + config.consumers().get(i).id() : null;
+                case "credentials" -> i < config.credentials().size() ? "credentials/"
+                        + config.credentials().get(i).consumerId() + "/" + config.credentials().get(i).id() : null;
+                case "authzPolicies" -> i < config.authzPolicies().size()
+                        ? "policies/authz/" + config.authzPolicies().get(i).id() : null;
+                case "pluginConfigs" -> i < config.pluginConfigs().size()
+                        ? "plugin-configs/" + config.pluginConfigs().get(i).id() : null;
+                case "revokedTokens" -> i < config.revokedTokens().size()
+                        ? "policies/revoked-tokens/" + config.revokedTokens().get(i).id() : null;
                 default -> i < config.globalPlugins().size()
                         ? "global-plugins/" + config.globalPlugins().get(i).name() : null;
             };

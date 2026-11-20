@@ -37,7 +37,8 @@ Decoded by `apigw.model.ConfigDecoder`, validated by `ConfigValidator`, compiled
     "stripRequestHeaders": ["x-consumer-id", "x-tenant-id"],
     "viaName": "apigw",
     "defaultTimeouts": {"connectMs": 2000, "firstByteMs": 30000, "idleMs": 60000, "totalMs": 0},
-    "maxRequestBodyBytes": 10485760
+    "maxRequestBodyBytes": 10485760,
+    "upstreamAllowCidrs": ["10.1.0.0/16"]
   },
   "upstreams": [{
     "id": "users-v1", "scheme": "http", "balancer": "least-requests", "http2": false,
@@ -55,6 +56,13 @@ Decoded by `apigw.model.ConfigDecoder`, validated by `ConfigValidator`, compiled
 }
 ```
 
+- `upstreamAllowCidrs`: exemptions from the SSRF deny list (ADR 0015). Upstream targets in loopback,
+  private, CGNAT, link-local/metadata, ULA, multicast, documentation, IPv4-mapped and NAT64 ranges are
+  rejected unless an entry here covers them. Literal IPs are checked when the config is validated, and
+  host names when the gateway connects (every resolved address must pass). Set it to your cluster's
+  pod/service CIDRs, never to `0.0.0.0/0`.
+- Security objects (ADR 0015/0016): top-level `consumers`, `credentials`, `authzPolicies`, `pluginConfigs`
+  and `revokedTokens`, plus `tenantId` on routes, services and upstreams. See `docs/plugins/authoring.md`.
 - `match`: `exact`, `prefix` (default; segment-bounded), `template` (`{name}` = one segment).
 - `balancer`: `round-robin` (default), `weighted-round-robin` (smooth), `least-requests` (power of two
   choices on in-flight requests per weight), `consistent-hash` with `hashKey` `ip` or `header:<name>`

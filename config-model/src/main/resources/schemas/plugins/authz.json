@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://apigw.local/schemas/plugins/authz.json",
+  "title": "authz plugin",
+  "description": "RBAC/ABAC: evaluates the referenced policies/authz/{id}. Any matching deny wins, then any matching allow; otherwise 403 (401 when unauthenticated).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["policies"],
+  "properties": {
+    "policies": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" } }
+  }
+}

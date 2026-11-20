@@ -52,7 +52,10 @@ public final class Cidr {
                 throw new IllegalArgumentException("not an IP literal: " + addr);
             }
         }
-        if (addr.indexOf(':') < 0 && addr.chars().filter(ch -> ch == '.').count() != 3) {
+        if (addr.indexOf(':') < 0 && (addr.chars().filter(ch -> ch == '.').count() != 3
+                || !addr.chars().allMatch(ch -> ch == '.' || (ch >= '0' && ch <= '9')))) {
+            // IPv4 is digits and exactly three dots. Anything else (e.g. "dead.beef.cafe.face") is a name,
+            // and handing it to InetAddress would trigger a DNS lookup.
             throw new IllegalArgumentException("not an IP literal: " + addr);
         }
         try {

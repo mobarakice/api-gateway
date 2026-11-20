@@ -14,7 +14,7 @@ import org.junit.jupiter.api.Test;
 class RouterTest {
 
     private static Snapshot compile(String routes) throws Exception {
-        String json = "{\"schemaVersion\":1,"
+        String json = "{\"schemaVersion\":1,\"settings\":{\"upstreamAllowCidrs\":[\"127.0.0.0/8\",\"::1/128\"]},"
                 + "\"upstreams\":[{\"id\":\"u\",\"targets\":[{\"host\":\"127.0.0.1\",\"port\":1}]}],"
                 + "\"services\":[{\"id\":\"s\",\"upstreamId\":\"u\"}],\"routes\":[" + routes + "]}";
         return new SnapshotCompiler(new PluginRegistry(List.of()))

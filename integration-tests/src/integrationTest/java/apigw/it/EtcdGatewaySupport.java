@@ -48,6 +48,9 @@ final class EtcdGatewaySupport {
     /** schema-version, upstream {@code echo}, service {@code s}, route {@code a} at {@code /a}. */
     static void seed(Ctl ctl, String prefix, int upstreamPort) {
         ctl.put(prefix + "meta/schema-version", "1");
+        // The echo upstream is on loopback: allow-list it for the SSRF rules.
+        ctl.put(prefix + "meta/settings", envelope("Settings", "settings",
+                "{\"upstreamAllowCidrs\":[\"127.0.0.0/8\"]}"));
         ctl.put(prefix + "upstreams/echo", envelope("Upstream", "echo",
                 "{\"targets\":[{\"host\":\"127.0.0.1\",\"port\":" + upstreamPort + "}]}"));
         ctl.put(prefix + "services/s", envelope("Service", "s", "{\"upstreamId\":\"echo\"}"));

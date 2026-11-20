@@ -15,8 +15,8 @@ if you change a command, module, or convention, update this file in the same com
 | `gradle/libs.versions.toml` | Every dependency and plugin version. Never hardcode versions in module build files |
 | `config-model/` | Config DTOs and JSON Schemas shared by gateway and control plane |
 | `gateway-core/` | Request pipeline, routing trie, immutable snapshot model, plugin SPI and registry |
-| `gateway-plugins/` | Built-in plugins: auth, authz, rate limit, cache, CORS, transforms, IP rules |
-| `gateway-proxy/` | Upstream pools, load balancing, circuit breaker, retries, streaming proxy |
+| `gateway-plugins/` | Built-in plugins: `jwt` (+ OIDC key sets), `key-auth`, `authz`, `headers`; rate limit, cache, CORS, IP rules from M5. Test fixtures (`TestJwt`, JDK-signed tokens) in `src/testFixtures` |
+| `gateway-proxy/` | Upstream pools, load balancing, SSRF connect-time resolver (`TargetResolver`), circuit breaker, retries, streaming proxy |
 | `gateway-config/` | etcd HTTP/JSON client, config worker (`worker/`: sync, watch, LKG, heartbeat — ADR 0014), file source |
 | `gateway-observability/` | Metrics, tracing, and the SLF4J JSON log provider (ADR 0007) |
 | `gateway-app/` | `main`, wiring, Native Image metadata |
@@ -97,12 +97,19 @@ For anything in the request path or config worker, also run the native build and
 - Validate value size and transaction op count before writing; etcd rejects oversized requests.
 - Key-schema changes need a versioned migration in `control-plane` and a bump of `meta/schema-version`.
 - Secrets: hash credentials; envelope-encrypt anything that must be recoverable. Never store plaintext.
+  API keys: `credentials/{consumerId}/{id}` holds `keyId` + `sha256$salt$digest` (ADR 0015).
+- Upstream targets in private/loopback/metadata ranges are rejected unless covered by
+  `settings.upstreamAllowCidrs` (ADR 0015). Test and dev configs on loopback must allow `127.0.0.0/8`.
 
 ## Plugins
 
 - A plugin = name, version, phase(s), priority, JSON Schema in `config-model/`, and a factory that
   returns an immutable compiled instance. Register it in the static registry.
-- Precedence: consumer > route > service > global.
+- Precedence: consumer > route > service > global. Consumer overrides swap instances at run time
+  and only for plugins already in the route chain (ADR 0016).
+- Authenticating plugins return `authenticates() == true` and call `exchange.authenticate(principal)`;
+  identity headers (`x-consumer-id`, `x-tenant-id`, ...) are set only there and always stripped inbound.
+  Tenant routes must have one in their chain.
 - The gateway and the control plane validate against the same schema file. Change the schema and
   you must update: validation tests, the plugin authoring doc, and any console form overrides.
 - Every new plugin needs unit tests, a JVM + native integration test, and a microbenchmark if it
@@ -140,7 +147,9 @@ For anything in the request path or config worker, also run the native build and
 
 ## Testing
 
-- Unit tests next to the code (JUnit 5; Vitest for the console).
+- Unit tests next to the code (JUnit 5; Vitest for the console). Shared test helpers that must run in
+  native images go in a module's `testFixtures` (not `test-support`, which carries Testcontainers and
+  Bouncy Castle).
 - Integration tests use Testcontainers with the official etcd and Redis images. Don't mock etcd
   in integration tests.
 - Config worker changes must keep these cases green: etcd down at boot, etcd restart, leader

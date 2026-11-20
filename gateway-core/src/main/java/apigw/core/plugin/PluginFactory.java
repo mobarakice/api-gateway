@@ -28,5 +28,14 @@ public interface PluginFactory {
      *
      * @throws PluginConfigException with every problem, paths relative to {@code config}
      */
-    Plugin create(JsonNode config) throws PluginConfigException;
+    Plugin create(JsonNode config, PluginContext context) throws PluginConfigException;
+
+    /**
+     * True for plugins that establish a {@link apigw.core.auth.Principal}. They cannot be configured per
+     * consumer (the consumer is not known before they run) and satisfy the "tenant routes need
+     * authentication" rule.
+     */
+    default boolean authenticates() {
+        return false;
+    }
 }

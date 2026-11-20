@@ -9,11 +9,13 @@ gateway's snapshot build.
 | `routes/{id}` | control plane | yes | |
 | `services/{id}` | control plane | yes | |
 | `upstreams/{id}` | control plane | yes | targets validated for SSRF at publish |
-| `consumers/{id}` | control plane | yes | |
-| `credentials/{consumerId}/{id}` | control plane | yes | hashed (API keys) or envelope-encrypted; never plaintext |
-| `plugin-configs/{id}` | control plane | yes | reusable plugin config sets |
+| `consumers/{id}` | control plane | yes | kind `Consumer`; spec `{username?, roles?, attributes?, plugins?}` |
+| `credentials/{consumerId}/{id}` | control plane | yes | kind `Credential`; spec `{type: api-key, keyId, hash: sha256$salt$digest}`. `consumerId` comes from the key. Never plaintext |
+| `plugin-configs/{id}` | control plane | yes | kind `PluginConfig`; spec `{plugin, config}`, referenced by `configRef` |
 | `global-plugins/{name}` | control plane | yes | envelope `kind: GlobalPlugin`, `id` = plugin name; spec = `{enabled?, config?}` |
-| `policies/{type}/{id}` | control plane | yes | authz, rate-limit policies, cache invalidation tags |
+| `policies/authz/{id}` | control plane | yes | kind `AuthzPolicy` (ADR 0016) |
+| `policies/revoked-tokens/{id}` | control plane | yes | kind `RevokedToken`; spec `{jti, issuer?, expiresAt}`; ≤ 100,000 |
+| `policies/{type}/{id}` (other types) | control plane | yes | rate-limit and cache types arrive in M5; until then any other type rejects the state |
 | `certificates/{id}` | control plane | yes | references to key material, not raw private keys |
 | `meta/schema-version` | control plane (migrations) | yes | plain integer (`1`), not an envelope. Required: a keyspace without it is rejected |
 | `meta/settings` | control plane | yes | envelope `kind: Settings`, `id: settings`; spec = the `settings` object of the config document. Optional (defaults) |
@@ -41,12 +43,14 @@ suite checks that the gateway role cannot write anything outside `nodes/`.
 ```
 
 Rules the gateway enforces when it builds a snapshot (ADR 0014):
-- `kind` must match the subtree: `Route`, `Service`, `Upstream`, `GlobalPlugin`, `Settings`.
+- `kind` must match the subtree: `Route`, `Service`, `Upstream`, `GlobalPlugin`, `Settings`, `Consumer`,
+  `Credential`, `PluginConfig`, `AuthzPolicy`, `RevokedToken`.
+- The envelope's `tenantId` is the object's tenant; the spec must not repeat it.
 - `id` must equal the key's last segment, and the spec must not repeat it (the key is the identity).
 - `schemaVersion` must be supported by the running build.
 - Fields outside the envelope are rejected.
-- Values under `consumers/`, `credentials/`, `plugin-configs/`, `policies/` and `certificates/` are
-  envelope-checked and kept in the LKG. They are compiled from M4.
+- Values under `certificates/` are envelope-checked and kept in the LKG; they are compiled in M5
+  (TLS). Everything else is compiled from M4.
 - One invalid key rejects the whole state. The previous snapshot keeps serving.
 
 ## Limits

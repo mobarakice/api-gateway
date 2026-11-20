@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://apigw.local/schemas/plugins/jwt.json",
+  "title": "jwt plugin",
+  "description": "Authenticates Bearer JWS tokens. Algorithms are pinned per issuer; exactly one key source per issuer. 'none' is never accepted and HS* cannot be mixed with public-key algorithms.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["issuers"],
+  "properties": {
+    "issuers": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/issuer" } },
+    "header": { "type": "string", "default": "authorization", "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$" },
+    "clockSkewSeconds": { "type": "integer", "minimum": 0, "maximum": 300, "default": 60 },
+    "maxTokenBytes": { "type": "integer", "minimum": 512, "maximum": 65536, "default": 8192 },
+    "optional": { "type": "boolean", "default": false, "description": "Continue without a principal when no token is sent (an invalid token is always 401). Tenant routes still require a principal." },
+    "forwardToken": { "type": "boolean", "default": true, "description": "Keep the Authorization header on the upstream request." }
+  },
+  "$defs": {
+    "algorithm": { "enum": ["RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512", "EdDSA", "HS256", "HS384", "HS512"] },
+    "issuer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issuer", "audiences", "algorithms"],
+      "properties": {
+        "issuer": { "type": "string", "minLength": 1, "description": "Exact 'iss' value." },
+        "audiences": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "algorithms": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/algorithm" } },
+        "discovery": { "type": "boolean", "description": "Fetch <issuer>/.well-known/openid-configuration (https only)." },
+        "jwksUri": { "type": "string", "pattern": "^https://" },
+        "jwks": { "type": "object", "required": ["keys"], "description": "Inline public JWK Set. Private and symmetric keys are refused." },
+        "secretFile": { "type": "string", "minLength": 1, "description": "File with the raw HMAC secret (HS* only). Secrets never go into config." },
+        "caFile": { "type": "string", "description": "PEM trust anchors for discovery/JWKS fetches." },
+        "refreshSeconds": { "type": "integer", "minimum": 30, "maximum": 86400, "default": 300 },
+        "minRefreshSeconds": { "type": "integer", "minimum": 1, "maximum": 3600, "default": 30, "description": "Minimum time between refreshes triggered by unknown kids." },
+        "maxAgeSeconds": { "type": "integer", "minimum": 0, "maximum": 31536000, "default": 0, "description": "Reject tokens with now - iat above this (0 = off; needs iat)." },
+        "tenantClaim": { "type": "string", "description": "Claim holding the tenant ID." },
+        "rolesClaim": { "type": "string", "description": "Claim (dotted path allowed) with roles: array, or space-separated string." },
+        "consumerClaim": { "type": "string", "description": "Claim whose value is a consumer ID." },
+        "requireConsumer": { "type": "boolean", "default": false }
+      },
+      "oneOf": [
+        { "required": ["discovery"], "properties": { "discovery": { "const": true } } },
+        { "required": ["jwksUri"] },
+        { "required": ["jwks"] },
+        { "required": ["secretFile"] }
+      ]
+    }
+  }
+}

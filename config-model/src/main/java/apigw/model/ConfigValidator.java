@@ -23,6 +23,9 @@ public final class ConfigValidator {
     private static final Set<String> METHODS = Set.of("GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS",
             "TRACE", "CONNECT");
     private static final int MAX_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+    private static final Pattern KEY_ID = Pattern.compile("[A-Za-z0-9_-]{8,64}");
+    /** Revocation entries are compiled into every snapshot; keep the set bounded (ADR 0015). */
+    public static final int MAX_REVOKED_TOKENS = 100_000;
 
     private final List<ConfigError> errors = new ArrayList<>();
 
@@ -50,9 +53,22 @@ public final class ConfigValidator {
         settings(c.settings());
         Set<String> upstreamIds = ids(c.upstreams().stream().map(Upstream::id).toList(), "upstreams");
         Set<String> serviceIds = ids(c.services().stream().map(Service::id).toList(), "services");
-        ids(c.routes().stream().map(Route::id).toList(), "routes");
+        Set<String> routeIds = ids(c.routes().stream().map(Route::id).toList(), "routes");
+        Map<String, String> upstreamTenant = new HashMap<>();
+        c.upstreams().forEach(u -> upstreamTenant.put(u.id(), u.tenantId()));
+        Map<String, String> serviceTenant = new HashMap<>();
+        c.services().forEach(sv -> serviceTenant.put(sv.id(), sv.tenantId()));
+        List<Cidr> allow = new ArrayList<>();
+        for (String cidr : c.settings().upstreamAllowCidrs()) {
+            try {
+                allow.add(Cidr.parse(cidr));
+            } catch (IllegalArgumentException e) {
+                // reported by settings()
+            }
+        }
         for (int i = 0; i < c.upstreams().size(); i++) {
-            upstream(c.upstreams().get(i), "upstreams[" + i + "]");
+            upstream(c.upstreams().get(i), "upstreams[" + i + "]", allow);
+            tenantId(c.upstreams().get(i).tenantId(), "upstreams[" + i + "].tenantId");
         }
         for (int i = 0; i < c.services().size(); i++) {
             Service s = c.services().get(i);
@@ -62,12 +78,16 @@ public final class ConfigValidator {
             }
             timeouts(s.timeouts(), p + ".timeouts");
             plugins(s.plugins(), p + ".plugins");
+            tenantId(s.tenantId(), p + ".tenantId");
+            crossTenant(s.tenantId(), upstreamTenant.get(s.upstreamId()), p + ".upstreamId", "upstream");
         }
         Map<String, Integer> signatures = new HashMap<>();
         for (int i = 0; i < c.routes().size(); i++) {
             Route r = c.routes().get(i);
             String p = "routes[" + i + "]";
             route(r, p, serviceIds);
+            tenantId(r.tenantId(), p + ".tenantId");
+            crossTenant(r.tenantId(), serviceTenant.get(r.serviceId()), p + ".serviceId", "service");
             String sig = signature(r);
             Integer prev = signatures.putIfAbsent(sig, i);
             if (prev != null) {
@@ -75,6 +95,135 @@ public final class ConfigValidator {
             }
         }
         plugins(c.globalPlugins(), "globalPlugins");
+        security(c, routeIds);
+    }
+
+    /**
+     * A tenant-scoped object may use a shared (tenant-less) dependency or one of its own tenant, never
+     * another tenant's; a shared object may not depend on a tenant's.
+     */
+    private void crossTenant(String owner, String dependency, String p, String what) {
+        if (dependency != null && !dependency.equals(owner)) {
+            err(p, "references a " + what + " of another tenant");
+        }
+    }
+
+    private void tenantId(String tenant, String p) {
+        if (tenant != null && !ID.matcher(tenant).matches()) {
+            err(p, "must match " + ID.pattern());
+        }
+    }
+
+    private void security(GatewayConfig c, Set<String> routeIds) {
+        Set<String> consumerIds = ids(c.consumers().stream().map(Consumer::id).toList(), "consumers");
+        Map<String, String> consumerTenant = new HashMap<>();
+        for (int i = 0; i < c.consumers().size(); i++) {
+            Consumer k = c.consumers().get(i);
+            String p = "consumers[" + i + "]";
+            consumerTenant.put(k.id(), k.tenantId());
+            tenantId(k.tenantId(), p + ".tenantId");
+            for (int j = 0; j < k.roles().size(); j++) {
+                if (!ID.matcher(k.roles().get(j)).matches()) {
+                    err(p + ".roles[" + j + "]", "must match " + ID.pattern());
+                }
+            }
+            plugins(k.plugins(), p + ".plugins");
+        }
+        Set<String> credentialKeys = new HashSet<>();
+        Set<String> keyIds = new HashSet<>();
+        for (int i = 0; i < c.credentials().size(); i++) {
+            Credential k = c.credentials().get(i);
+            String p = "credentials[" + i + "]";
+            if (k.id() == null || !ID.matcher(k.id()).matches()) {
+                err(p + ".id", "must match " + ID.pattern());
+            } else if (!credentialKeys.add(k.consumerId() + "/" + k.id())) {
+                err(p + ".id", "duplicate credential '" + k.id() + "' for consumer '" + k.consumerId() + "'");
+            }
+            if (!consumerIds.contains(k.consumerId())) {
+                err(p + ".consumerId", "references unknown consumer '" + k.consumerId() + "'");
+            } else if (k.tenantId() != null && !k.tenantId().equals(consumerTenant.get(k.consumerId()))) {
+                err(p + ".tenantId", "must equal the consumer's tenant");
+            }
+            if (k.type() == Credential.Type.API_KEY) {
+                if (k.keyId() == null || !KEY_ID.matcher(k.keyId()).matches()) {
+                    err(p + ".keyId", "must match " + KEY_ID.pattern());
+                } else if (!keyIds.add(k.keyId())) {
+                    err(p + ".keyId", "duplicate keyId (key IDs are global)");
+                }
+                try {
+                    ApiKeyHash.parse(k.hash());
+                } catch (IllegalArgumentException e) {
+                    err(p + ".hash", e.getMessage());
+                }
+            }
+        }
+        Set<String> pluginConfigIds = ids(c.pluginConfigs().stream().map(PluginConfigSet::id).toList(),
+                "pluginConfigs");
+        Map<String, String> pluginConfigName = new HashMap<>();
+        c.pluginConfigs().forEach(pc -> pluginConfigName.put(pc.id(), pc.plugin()));
+        for (int i = 0; i < c.pluginConfigs().size(); i++) {
+            if (c.pluginConfigs().get(i).plugin() == null || c.pluginConfigs().get(i).plugin().isBlank()) {
+                err("pluginConfigs[" + i + "].plugin", "is required");
+            }
+        }
+        configRefs(c.globalPlugins(), "globalPlugins", pluginConfigIds, pluginConfigName);
+        for (int i = 0; i < c.services().size(); i++) {
+            configRefs(c.services().get(i).plugins(), "services[" + i + "].plugins", pluginConfigIds, pluginConfigName);
+        }
+        for (int i = 0; i < c.routes().size(); i++) {
+            configRefs(c.routes().get(i).plugins(), "routes[" + i + "].plugins", pluginConfigIds, pluginConfigName);
+        }
+        for (int i = 0; i < c.consumers().size(); i++) {
+            configRefs(c.consumers().get(i).plugins(), "consumers[" + i + "].plugins", pluginConfigIds,
+                    pluginConfigName);
+        }
+        ids(c.authzPolicies().stream().map(AuthzPolicy::id).toList(), "authzPolicies");
+        for (int i = 0; i < c.authzPolicies().size(); i++) {
+            AuthzPolicy a = c.authzPolicies().get(i);
+            String p = "authzPolicies[" + i + "]";
+            tenantId(a.tenantId(), p + ".tenantId");
+            for (int j = 0; j < a.routes().size(); j++) {
+                if (!routeIds.contains(a.routes().get(j))) {
+                    err(p + ".routes[" + j + "]", "references unknown route '" + a.routes().get(j) + "'");
+                }
+            }
+            for (int j = 0; j < a.methods().size(); j++) {
+                if (!METHODS.contains(a.methods().get(j))) {
+                    err(p + ".methods[" + j + "]", "unknown method '" + a.methods().get(j) + "'");
+                }
+            }
+            for (int j = 0; j < a.subjects().consumers().size(); j++) {
+                if (!consumerIds.contains(a.subjects().consumers().get(j))) {
+                    err(p + ".subjects.consumers[" + j + "]", "references unknown consumer '"
+                            + a.subjects().consumers().get(j) + "'");
+                }
+            }
+        }
+        if (c.revokedTokens().size() > MAX_REVOKED_TOKENS) {
+            err("revokedTokens", "more than " + MAX_REVOKED_TOKENS + " entries; revoke by rotating the issuer key "
+                    + "or shortening token lifetimes instead");
+        }
+        for (int i = 0; i < c.revokedTokens().size(); i++) {
+            RevokedToken t = c.revokedTokens().get(i);
+            if (t.jti() == null || t.jti().isEmpty() || t.jti().length() > 512) {
+                err("revokedTokens[" + i + "].jti", "must be 1..512 characters");
+            }
+        }
+    }
+
+    private void configRefs(List<PluginRef> refs, String p, Set<String> ids, Map<String, String> names) {
+        for (int i = 0; i < refs.size(); i++) {
+            String ref = refs.get(i).configRef();
+            if (ref == null) {
+                continue;
+            }
+            if (!ids.contains(ref)) {
+                err(p + "[" + i + "].configRef", "references unknown plugin config '" + ref + "'");
+            } else if (!ref.isEmpty() && !java.util.Objects.equals(names.get(ref), refs.get(i).name())) {
+                err(p + "[" + i + "].configRef", "plugin config '" + ref + "' is for plugin '" + names.get(ref)
+                        + "', not '" + refs.get(i).name() + "'");
+            }
+        }
     }
 
     private void settings(Settings s) {
@@ -97,6 +246,13 @@ public final class ConfigValidator {
             err("settings.maxRequestBodyBytes", "must be positive");
         }
         timeouts(s.defaultTimeouts(), "settings.defaultTimeouts");
+        for (int i = 0; i < s.upstreamAllowCidrs().size(); i++) {
+            try {
+                Cidr.parse(s.upstreamAllowCidrs().get(i));
+            } catch (IllegalArgumentException e) {
+                err("settings.upstreamAllowCidrs[" + i + "]", e.getMessage());
+            }
+        }
     }
 
     private Set<String> ids(List<String> ids, String kind) {
@@ -194,7 +350,7 @@ public final class ConfigValidator {
         }
     }
 
-    private void upstream(Upstream u, String p) {
+    private void upstream(Upstream u, String p, List<Cidr> allow) {
         if (u.targets().isEmpty()) {
             err(p + ".targets", "at least one target is required");
         }
@@ -204,6 +360,7 @@ public final class ConfigValidator {
             if (t.host() == null || t.host().isBlank() || t.host().contains("/") || t.host().contains(" ")) {
                 err(tp + ".host", "must be a host name or IP address");
             }
+            literalTarget(t.host(), tp + ".host", allow);
             if (t.port() < 1 || t.port() > 65_535) {
                 err(tp + ".port", "must be between 1 and 65535");
             }
@@ -231,6 +388,22 @@ public final class ConfigValidator {
         }
         if (pool.keepAliveSeconds() < 1) {
             err(p + ".pool.keepAliveSeconds", "must be positive");
+        }
+    }
+
+    /** SSRF check for IP-literal targets; names are checked at connect time (DNS rebinding). */
+    private void literalTarget(String host, String p, List<Cidr> allow) {
+        if (host == null) {
+            return;
+        }
+        try {
+            byte[] literal = Cidr.literal(host);
+            if (!AddressPolicy.permitted(literal, allow)) {
+                err(p, "address in a denied range (loopback, private, link-local, metadata, ...); allow it "
+                        + "explicitly with settings.upstreamAllowCidrs");
+            }
+        } catch (IllegalArgumentException e) {
+            // not an IP literal: a host name
         }
     }
 

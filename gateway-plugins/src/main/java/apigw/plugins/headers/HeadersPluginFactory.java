@@ -51,7 +51,7 @@ public final class HeadersPluginFactory implements PluginFactory {
     }
 
     @Override
-    public Plugin create(JsonNode config) throws PluginConfigException {
+    public Plugin create(JsonNode config, apigw.core.plugin.PluginContext context) throws PluginConfigException {
         List<ConfigError> errors = new ArrayList<>();
         unknown(config, "", Set.of("request", "response"), errors);
         HeaderEdits request = edits(config.get("request"), "request", errors);

@@ -46,7 +46,7 @@ class SnapshotCompilerTest {
         }
 
         @Override
-        public Plugin create(JsonNode config) throws PluginConfigException {
+        public Plugin create(JsonNode config, apigw.core.plugin.PluginContext context) throws PluginConfigException {
             if (!config.path("tag").isTextual()) {
                 throw new PluginConfigException("tag", "is required");
             }
@@ -60,6 +60,7 @@ class SnapshotCompilerTest {
 
     private static Snapshot compile(String global, String service, String routes) throws ConfigException {
         String json = "{\"schemaVersion\":1,\"revision\":3,"
+                + "\"settings\":{\"upstreamAllowCidrs\":[\"127.0.0.0/8\",\"::1/128\"]},"
                 + "\"upstreams\":[{\"id\":\"u\",\"targets\":[{\"host\":\"::1\",\"port\":81}]}],"
                 + "\"services\":[{\"id\":\"s\",\"upstreamId\":\"u\",\"timeouts\":{\"connectMs\":111},\"plugins\":["
                 + service + "]}],\"routes\":[" + routes + "],\"globalPlugins\":[" + global + "]}";

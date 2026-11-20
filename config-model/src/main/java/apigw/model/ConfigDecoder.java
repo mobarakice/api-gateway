@@ -92,6 +92,41 @@ public final class ConfigDecoder {
         return r;
     }
 
+    public static Consumer decodeConsumer(JsonNode node, String path) throws ConfigException {
+        ConfigDecoder d = new ConfigDecoder();
+        Consumer c = d.consumer(node, path);
+        d.throwIfErrors();
+        return c;
+    }
+
+    public static Credential decodeCredential(JsonNode node, String path) throws ConfigException {
+        ConfigDecoder d = new ConfigDecoder();
+        Credential c = d.credential(node, path);
+        d.throwIfErrors();
+        return c;
+    }
+
+    public static AuthzPolicy decodeAuthzPolicy(JsonNode node, String path) throws ConfigException {
+        ConfigDecoder d = new ConfigDecoder();
+        AuthzPolicy c = d.authzPolicy(node, path);
+        d.throwIfErrors();
+        return c;
+    }
+
+    public static PluginConfigSet decodePluginConfig(JsonNode node, String path) throws ConfigException {
+        ConfigDecoder d = new ConfigDecoder();
+        PluginConfigSet c = d.pluginConfig(node, path);
+        d.throwIfErrors();
+        return c;
+    }
+
+    public static RevokedToken decodeRevokedToken(JsonNode node, String path) throws ConfigException {
+        ConfigDecoder d = new ConfigDecoder();
+        RevokedToken c = d.revokedToken(node, path);
+        d.throwIfErrors();
+        return c;
+    }
+
     private void throwIfErrors() throws ConfigException {
         if (!errors.isEmpty()) {
             throw new ConfigException(errors);
@@ -103,7 +138,7 @@ public final class ConfigDecoder {
             return null;
         }
         known(n, "$", Set.of("schemaVersion", "revision", "settings", "routes", "services", "upstreams",
-                "globalPlugins"));
+                "globalPlugins", "consumers", "credentials", "authzPolicies", "pluginConfigs", "revokedTokens"));
         int schemaVersion = intField(n, "$", "schemaVersion", null);
         long revision = longField(n, "$", "revision", 0L);
         Settings settings = n.has("settings") ? settings(n.get("settings"), "settings") : Settings.DEFAULTS;
@@ -114,10 +149,21 @@ public final class ConfigDecoder {
         List<Upstream> upstreams = new ArrayList<>();
         each(n, "$", "upstreams", (item, p) -> upstreams.add(upstream(item, p)));
         List<PluginRef> global = plugins(n, "$", "globalPlugins");
+        List<Consumer> consumers = new ArrayList<>();
+        each(n, "$", "consumers", (item, p) -> consumers.add(consumer(item, p)));
+        List<Credential> credentials = new ArrayList<>();
+        each(n, "$", "credentials", (item, p) -> credentials.add(credential(item, p)));
+        List<AuthzPolicy> policies = new ArrayList<>();
+        each(n, "$", "authzPolicies", (item, p) -> policies.add(authzPolicy(item, p)));
+        List<PluginConfigSet> pluginConfigs = new ArrayList<>();
+        each(n, "$", "pluginConfigs", (item, p) -> pluginConfigs.add(pluginConfig(item, p)));
+        List<RevokedToken> revoked = new ArrayList<>();
+        each(n, "$", "revokedTokens", (item, p) -> revoked.add(revokedToken(item, p)));
         if (!errors.isEmpty()) {
             return null;
         }
-        return new GatewayConfig(schemaVersion, revision, settings, routes, services, upstreams, global);
+        return new GatewayConfig(schemaVersion, revision, settings, routes, services, upstreams, global, consumers,
+                credentials, policies, pluginConfigs, revoked);
     }
 
     private Settings settings(JsonNode n, String path) {
@@ -125,7 +171,7 @@ public final class ConfigDecoder {
             return Settings.DEFAULTS;
         }
         known(n, path, Set.of("trustedProxies", "stripRequestHeaders", "viaName", "defaultTimeouts",
-                "maxRequestBodyBytes"));
+                "maxRequestBodyBytes", "upstreamAllowCidrs"));
         Settings d = Settings.DEFAULTS;
         return new Settings(
                 n.has("trustedProxies") ? strings(n, path, "trustedProxies") : d.trustedProxies(),
@@ -135,7 +181,8 @@ public final class ConfigDecoder {
                 stringField(n, path, "viaName", d.viaName()),
                 n.has("defaultTimeouts") ? timeouts(n.get("defaultTimeouts"), path + ".defaultTimeouts")
                         .orElse(Timeouts.DEFAULTS) : d.defaultTimeouts(),
-                longField(n, path, "maxRequestBodyBytes", d.maxRequestBodyBytes()));
+                longField(n, path, "maxRequestBodyBytes", d.maxRequestBodyBytes()),
+                n.has("upstreamAllowCidrs") ? strings(n, path, "upstreamAllowCidrs") : d.upstreamAllowCidrs());
     }
 
     private Route route(JsonNode n, String path) {
@@ -157,7 +204,8 @@ public final class ConfigDecoder {
                 stringField(n, path, "serviceId", null),
                 n.has("timeouts") ? timeouts(n.get("timeouts"), path + ".timeouts") : Timeouts.UNSET,
                 plugins(n, path, "plugins"),
-                boolField(n, path, "preserveHost", false));
+                boolField(n, path, "preserveHost", false),
+                tenant(n, path));
     }
 
     private Service service(JsonNode n, String path) {
@@ -170,7 +218,8 @@ public final class ConfigDecoder {
                 stringField(n, path, "id", null),
                 stringField(n, path, "upstreamId", null),
                 n.has("timeouts") ? timeouts(n.get("timeouts"), path + ".timeouts") : Timeouts.UNSET,
-                plugins(n, path, "plugins"));
+                plugins(n, path, "plugins"),
+                tenant(n, path));
     }
 
     private Upstream upstream(JsonNode n, String path) {
@@ -205,7 +254,8 @@ public final class ConfigDecoder {
                 enumField(n, path, "balancer", Upstream.Balancer.class, Upstream.Balancer.ROUND_ROBIN),
                 stringField(n, path, "hashKey", ""),
                 pool,
-                boolField(n, path, "http2", false));
+                boolField(n, path, "http2", false),
+                tenant(n, path));
     }
 
     private Timeouts timeouts(JsonNode n, String path) {
@@ -228,13 +278,158 @@ public final class ConfigDecoder {
     }
 
     private PluginRef pluginRef(JsonNode item, String p) {
-        known(item, p, Set.of("name", "enabled", "config"));
+        known(item, p, Set.of("name", "enabled", "config", "configRef"));
         JsonNode config = item.has("config") ? item.get("config") : MAPPER.createObjectNode();
         if (!config.isObject()) {
             errors.add(new ConfigError(p + ".config", "must be an object"));
         }
+        String ref = stringField(item, p, "configRef", "");
+        if (!ref.isEmpty() && item.has("config")) {
+            errors.add(new ConfigError(p + ".configRef", "use either config or configRef, not both"));
+        }
         return new PluginRef(stringField(item, p, "name", null), boolField(item, p, "enabled", true),
+                config.deepCopy(), ref.isEmpty() ? null : ref);
+    }
+
+    private String tenant(JsonNode n, String path) {
+        String t = stringField(n, path, "tenantId", "");
+        return t.isEmpty() ? null : t;
+    }
+
+    private static final Set<String> ENVELOPE_FIELDS = Set.of("kind", "schemaVersion", "updatedAt", "updatedBy");
+
+    private Set<String> withEnvelope(String... fields) {
+        Set<String> s = new java.util.HashSet<>(ENVELOPE_FIELDS);
+        s.addAll(List.of(fields));
+        return s;
+    }
+
+    private Consumer consumer(JsonNode n, String path) {
+        if (!object(n, path)) {
+            return null;
+        }
+        known(n, path, withEnvelope("id", "tenantId", "username", "roles", "attributes", "plugins"));
+        return new Consumer(stringField(n, path, "id", null), tenant(n, path), stringField(n, path, "username", ""),
+                n.has("roles") ? strings(n, path, "roles") : List.of(), stringMap(n, path, "attributes"),
+                plugins(n, path, "plugins"));
+    }
+
+    private Credential credential(JsonNode n, String path) {
+        if (!object(n, path)) {
+            return null;
+        }
+        known(n, path, withEnvelope("id", "consumerId", "tenantId", "type", "keyId", "hash"));
+        return new Credential(stringField(n, path, "id", null), stringField(n, path, "consumerId", null),
+                tenant(n, path), enumField(n, path, "type", Credential.Type.class, null),
+                stringField(n, path, "keyId", null), stringField(n, path, "hash", null));
+    }
+
+    private AuthzPolicy authzPolicy(JsonNode n, String path) {
+        if (!object(n, path)) {
+            return null;
+        }
+        known(n, path, withEnvelope("id", "tenantId", "effect", "routes", "methods", "subjects", "condition"));
+        AuthzPolicy.Subjects subjects = AuthzPolicy.Subjects.ANYONE;
+        if (n.has("subjects") && object(n.get("subjects"), path + ".subjects")) {
+            JsonNode s = n.get("subjects");
+            String sp = path + ".subjects";
+            known(s, sp, Set.of("roles", "consumers", "anyAuthenticated"));
+            subjects = new AuthzPolicy.Subjects(s.has("roles") ? strings(s, sp, "roles") : List.of(),
+                    s.has("consumers") ? strings(s, sp, "consumers") : List.of(),
+                    boolField(s, sp, "anyAuthenticated", false));
+        }
+        Condition condition = n.has("condition") ? condition(n.get("condition"), path + ".condition", 0) : null;
+        return new AuthzPolicy(stringField(n, path, "id", null), tenant(n, path),
+                enumField(n, path, "effect", AuthzPolicy.Effect.class, null),
+                n.has("routes") ? strings(n, path, "routes") : List.of(),
+                n.has("methods") ? strings(n, path, "methods") : List.of(), subjects, condition);
+    }
+
+    private static final int MAX_CONDITION_DEPTH = 16;
+
+    private Condition condition(JsonNode n, String path, int depth) {
+        if (!object(n, path)) {
+            return null;
+        }
+        if (depth > MAX_CONDITION_DEPTH) {
+            errors.add(new ConfigError(path, "nested deeper than " + MAX_CONDITION_DEPTH));
+            return null;
+        }
+        if (n.has("all") || n.has("any")) {
+            String f = n.has("all") ? "all" : "any";
+            known(n, path, Set.of(f));
+            List<Condition> children = new ArrayList<>();
+            each(n, path, f, (item, p) -> children.add(condition(item, p, depth + 1)));
+            if (children.isEmpty()) {
+                errors.add(new ConfigError(path + "." + f, "must not be empty"));
+            }
+            return "all".equals(f) ? new Condition.All(children) : new Condition.Any(children);
+        }
+        if (n.has("not")) {
+            known(n, path, Set.of("not"));
+            return new Condition.Not(condition(n.get("not"), path + ".not", depth + 1));
+        }
+        known(n, path, Set.of("op", "attr", "value", "values", "ref"));
+        Condition.Op op = enumField(n, path, "op", Condition.Op.class, null);
+        String attr = stringField(n, path, "attr", null);
+        if (attr != null && !Condition.ATTRIBUTE.matcher(attr).matches()) {
+            errors.add(new ConfigError(path + ".attr", "unknown attribute '" + attr + "'"));
+        }
+        String value = stringField(n, path, "value", "");
+        List<String> values = n.has("values") ? strings(n, path, "values") : List.of();
+        String ref = stringField(n, path, "ref", "");
+        if (!ref.isEmpty() && !Condition.ATTRIBUTE.matcher(ref).matches()) {
+            errors.add(new ConfigError(path + ".ref", "unknown attribute '" + ref + "'"));
+        }
+        if (op != null) {
+            boolean hasValue = n.has("value");
+            boolean hasValues = n.has("values");
+            boolean hasRef = !ref.isEmpty();
+            int forms = (hasValue ? 1 : 0) + (hasValues ? 1 : 0) + (hasRef ? 1 : 0);
+            boolean ok = switch (op) {
+                case EXISTS -> forms == 0;
+                case IN -> hasValues && forms == 1;
+                case PREFIX -> hasValue && forms == 1;
+                case EQ, NE, CONTAINS -> (hasValue || hasRef) && forms == 1;
+            };
+            if (!ok) {
+                errors.add(new ConfigError(path, "operand does not fit op " + op.name().toLowerCase(Locale.ROOT)
+                        + " (exists: none; in: values; prefix: value; eq/ne/contains: value or ref)"));
+            }
+        }
+        return new Condition.Compare(op, attr, n.has("value") ? value : null, values, ref.isEmpty() ? null : ref);
+    }
+
+    private PluginConfigSet pluginConfig(JsonNode n, String path) {
+        if (!object(n, path)) {
+            return null;
+        }
+        known(n, path, withEnvelope("id", "tenantId", "plugin", "config"));
+        JsonNode config = n.has("config") ? n.get("config") : MAPPER.createObjectNode();
+        if (!config.isObject()) {
+            errors.add(new ConfigError(path + ".config", "must be an object"));
+        }
+        return new PluginConfigSet(stringField(n, path, "id", null), stringField(n, path, "plugin", null),
                 config.deepCopy());
+    }
+
+    private RevokedToken revokedToken(JsonNode n, String path) {
+        if (!object(n, path)) {
+            return null;
+        }
+        known(n, path, withEnvelope("id", "jti", "issuer", "expiresAt"));
+        String exp = stringField(n, path, "expiresAt", null);
+        java.time.Instant expiresAt = null;
+        if (exp != null) {
+            try {
+                expiresAt = java.time.Instant.parse(exp);
+            } catch (java.time.format.DateTimeParseException e) {
+                errors.add(new ConfigError(path + ".expiresAt", "must be an RFC 3339 UTC timestamp"));
+            }
+        }
+        String issuer = stringField(n, path, "issuer", "");
+        return new RevokedToken(stringField(n, path, "id", null), stringField(n, path, "jti", null),
+                issuer.isEmpty() ? null : issuer, expiresAt);
     }
 
     // ---- primitive helpers -------------------------------------------------------------------

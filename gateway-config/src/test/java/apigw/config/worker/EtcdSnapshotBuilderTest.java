@@ -90,6 +90,45 @@ class EtcdSnapshotBuilderTest {
         });
     }
 
+    static String tenantEnv(String kind, String id, String tenant, String spec) {
+        return "{\"id\":\"" + id + "\",\"kind\":\"" + kind + "\",\"schemaVersion\":1,\"tenantId\":\"" + tenant
+                + "\",\"updatedAt\":\"x\",\"updatedBy\":\"t\",\"spec\":" + spec + "}";
+    }
+
+    @Test
+    void buildsSecuritySubtreesWithTenantsAndKeyDerivedIds() throws Exception {
+        List<KeyValue> kvs = valid();
+        kvs.add(kv("consumers/c1", tenantEnv("Consumer", "c1", "a", "{\"username\":\"alice\",\"roles\":[\"r\"]}")));
+        kvs.add(kv("credentials/c1/k1", tenantEnv("Credential", "k1", "a", "{\"type\":\"api-key\","
+                + "\"keyId\":\"key_00001\",\"hash\":\"sha256$x$y\"}")));
+        kvs.add(kv("plugin-configs/pc", env("PluginConfig", "pc", "{\"plugin\":\"headers\",\"config\":{}}")));
+        kvs.add(kv("policies/authz/p", env("AuthzPolicy", "p", "{\"effect\":\"allow\"}")));
+        kvs.add(kv("policies/revoked-tokens/t", env("RevokedToken", "t",
+                "{\"jti\":\"j\",\"expiresAt\":\"2099-01-01T00:00:00Z\"}")));
+        GatewayConfig c = EtcdSnapshotBuilder.build(P, kvs, 7);
+        assertThat(c.consumers()).singleElement().satisfies(k -> {
+            assertThat(k.id()).isEqualTo("c1");
+            assertThat(k.tenantId()).isEqualTo("a");
+        });
+        assertThat(c.credentials()).singleElement().satisfies(k -> {
+            assertThat(k.consumerId()).isEqualTo("c1");
+            assertThat(k.id()).isEqualTo("k1");
+            assertThat(k.tenantId()).isEqualTo("a");
+        });
+        assertThat(c.pluginConfigs()).hasSize(1);
+        assertThat(c.authzPolicies()).hasSize(1);
+        assertThat(c.revokedTokens()).singleElement().satisfies(t -> assertThat(t.jti()).isEqualTo("j"));
+    }
+
+    @Test
+    void rejectsUnknownPolicyTypesAndTenantInSpec() {
+        List<KeyValue> kvs = valid();
+        kvs.add(kv("policies/rate/x", env("RatePolicy", "x", "{}")));
+        kvs.add(kv("consumers/c2", tenantEnv("Consumer", "c2", "a", "{\"tenantId\":\"b\"}")));
+        assertThatThrownBy(() -> EtcdSnapshotBuilder.build(P, kvs, 1)).isInstanceOfSatisfying(ConfigException.class,
+                e -> assertThat(paths(e)).contains("policies/rate/x", "consumers/c2.spec.tenantId"));
+    }
+
     @Test
     void configKeyFilter() {
         assertThat(EtcdSnapshotBuilder.isConfigKey(P, P + "routes/a")).isTrue();

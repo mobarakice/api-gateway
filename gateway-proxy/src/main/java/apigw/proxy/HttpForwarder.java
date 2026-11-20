@@ -20,11 +20,17 @@ import java.util.Map;
 public final class HttpForwarder implements Forwarder {
 
     private final Vertx vertx;
+    private final TargetResolver resolver;
     private final Map<String, UpstreamState> states = new HashMap<>();
     private long generation;
 
     public HttpForwarder(Vertx vertx) {
+        this(vertx, new TargetResolver(vertx));
+    }
+
+    public HttpForwarder(Vertx vertx, TargetResolver resolver) {
         this.vertx = vertx;
+        this.resolver = resolver;
     }
 
     @Override
@@ -44,7 +50,7 @@ public final class HttpForwarder implements Forwarder {
             state = new UpstreamState(vertx, def);
             states.put(def.id(), state);
         }
-        new ProxyCall(vertx, state, exchange).start();
+        new ProxyCall(vertx, resolver, state, exchange).start();
     }
 
     private void reconcile(Snapshot snapshot) {

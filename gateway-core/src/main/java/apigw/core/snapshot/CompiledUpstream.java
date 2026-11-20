@@ -24,8 +24,23 @@ public record CompiledUpstream(
      * One backend.
      *
      * @param authority precomputed {@code host:port} for the upstream Host header
+     * @param literal true when {@code host} is an IP literal: checked against the SSRF rules at compile time
+     *                instead of being resolved (and re-checked) per connection
      */
-    public record Target(int index, String host, int port, int weight, String authority) {
+    public record Target(int index, String host, int port, int weight, String authority, boolean literal) {
+
+        public Target(int index, String host, int port, int weight, String authority) {
+            this(index, host, port, weight, authority, isLiteral(host));
+        }
+
+        private static boolean isLiteral(String host) {
+            try {
+                apigw.model.Cidr.literal(host);
+                return true;
+            } catch (IllegalArgumentException e) {
+                return false;
+            }
+        }
     }
 
     public CompiledUpstream {

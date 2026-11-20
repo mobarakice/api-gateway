@@ -33,6 +33,7 @@ final class ProxyCall {
     private static final Logger LOG = LoggerFactory.getLogger(ProxyCall.class);
 
     private final Vertx vertx;
+    private final TargetResolver resolver;
     private final UpstreamState state;
     private final ProxyExchange exchange;
     private int target = -1;
@@ -42,8 +43,9 @@ final class ProxyCall {
     private boolean released;
     private boolean headersReceived;
 
-    ProxyCall(Vertx vertx, UpstreamState state, ProxyExchange exchange) {
+    ProxyCall(Vertx vertx, TargetResolver resolver, UpstreamState state, ProxyExchange exchange) {
         this.vertx = vertx;
+        this.resolver = resolver;
         this.state = state;
         this.exchange = exchange;
     }
@@ -54,6 +56,33 @@ final class ProxyCall {
         target = state.balancer.pick(exchange, state.inflight);
         state.inflight[target]++;
         CompiledUpstream.Target t = state.definition.targets().get(target);
+        if (to.totalMs() > 0) {
+            totalTimer = vertx.setTimer(to.totalMs(), id -> {
+                totalTimer = -1;
+                timeout("total");
+            });
+        }
+        exchange.onAbort(this::clientGone);
+        if (t.literal()) {
+            // Literal targets were checked against the SSRF rules when the snapshot compiled.
+            connect(req, to, t, null);
+            return;
+        }
+        resolver.resolve(t.host(), exchange.snapshot().settings().upstreamAllow()).onComplete(ar -> {
+            if (released) {
+                return;
+            }
+            if (ar.failed()) {
+                failed(ar.cause());
+                return;
+            }
+            connect(req, to, t, ar.result());
+        });
+    }
+
+    /** Connects to {@code address} (the checked IP) when given, keeping the name for Host and SNI. */
+    private void connect(HttpServerRequest req, ResolvedTimeouts to, CompiledUpstream.Target t,
+            java.net.InetAddress address) {
         RequestOptions options = new RequestOptions()
                 .setMethod(req.method())
                 .setHost(t.host())
@@ -63,13 +92,9 @@ final class ProxyCall {
                 .setConnectTimeout(to.connectMs())
                 .setIdleTimeout(to.idleMs())
                 .setFollowRedirects(false);
-        if (to.totalMs() > 0) {
-            totalTimer = vertx.setTimer(to.totalMs(), id -> {
-                totalTimer = -1;
-                timeout("total");
-            });
+        if (address != null) {
+            options.setServer(io.vertx.core.net.SocketAddress.inetSocketAddress(t.port(), address.getHostAddress()));
         }
-        exchange.onAbort(this::clientGone);
         state.client.request(options).onComplete(ar -> {
             if (ar.failed()) {
                 failed(ar.cause());
@@ -157,7 +182,13 @@ final class ProxyCall {
         }
         release();
         int code;
-        if (cause instanceof ConnectionPoolTooBusyException) {
+        if (cause instanceof TargetResolver.DeniedAddressException) {
+            // SSRF rule: never connect. The client only sees a generic 502.
+            LOG.warn("upstream address denied route={} requestId={} upstream={}", exchange.route().id(),
+                    exchange.requestId(), state.definition.id());
+            exchange.respond(502, Problems.title(502));
+            return;
+        } else if (cause instanceof ConnectionPoolTooBusyException) {
             code = 503;
         } else if (cause instanceof TimeoutException) {
             code = 504;

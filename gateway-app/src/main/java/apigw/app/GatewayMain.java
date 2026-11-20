@@ -8,7 +8,9 @@ import apigw.config.worker.WorkerStatus;
 import apigw.core.pipeline.RequestIds;
 import apigw.core.snapshot.SnapshotCompiler;
 import apigw.core.snapshot.SnapshotHolder;
+import apigw.core.plugin.PluginServices;
 import apigw.plugins.BuiltinPlugins;
+import apigw.plugins.jwt.OidcKeySources;
 import apigw.observability.logging.JsonLogging;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -19,6 +21,7 @@ import io.vertx.core.VertxOptions;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.time.Clock;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.Map;
@@ -74,7 +77,10 @@ public final class GatewayMain {
                 .setPreferNativeTransport(false));
         Readiness readiness = new Readiness();
         SnapshotHolder snapshots = new SnapshotHolder();
-        SnapshotCompiler compiler = new SnapshotCompiler(BuiltinPlugins.registry());
+        // Long-lived plugin services: the OIDC/JWKS key-set cache fetches on its own context (ADR 0015).
+        PluginServices services = new PluginServices(Map.of(OidcKeySources.class,
+                new OidcKeySources(vertx, Duration.ofSeconds(5))));
+        SnapshotCompiler compiler = new SnapshotCompiler(BuiltinPlugins.registry(), services, Clock.systemUTC());
         GatewayServer server = new GatewayServer(vertx, config, readiness, snapshots);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> shutdown(vertx, server, config.shutdownGrace()),
                 "gateway-shutdown"));
@@ -113,7 +119,10 @@ public final class GatewayMain {
         }
         Duration poll = Duration.ofMillis(pollMillis(env));
         FileConfigSource source = new FileConfigSource(vertx, Path.of(file), compiler, snapshots,
-                s -> readiness.markReady());
+                s -> {
+                    compiler.services().published(s.resources());
+                    readiness.markReady();
+                });
         source.load()
                 .onSuccess(s -> LOG.info("ready revision={} readyMs={}", s.revision(),
                         TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos)))
@@ -143,6 +152,7 @@ public final class GatewayMain {
         }
         AtomicBoolean first = new AtomicBoolean(true);
         ConfigWorker worker = new ConfigWorker(settings, compiler, snapshots, s -> {
+            compiler.services().published(s.resources());
             readiness.markReady();
             if (first.compareAndSet(true, false)) {
                 LOG.info("ready revision={} readyMs={}", s.revision(),

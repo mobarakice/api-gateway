@@ -24,6 +24,8 @@ testing {
             dependencies {
                 implementation(project(":gateway-config"))
                 implementation(project(":test-support"))
+                implementation(project(":config-model"))
+                implementation(testFixtures(project(":gateway-plugins")))
                 implementation(platform(libs.vertx.bom))
                 implementation(libs.vertx.core)
                 implementation(platform(libs.testcontainers.bom))

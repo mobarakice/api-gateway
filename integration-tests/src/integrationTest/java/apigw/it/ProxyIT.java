@@ -69,6 +69,7 @@ class ProxyIT {
     private static String config(long revision, String extraRoute) {
         return """
                 {"schemaVersion": 1, "revision": REVISION,
+                 "settings": {"upstreamAllowCidrs": ["127.0.0.0/8"]},
                  "upstreams": [
                    {"id": "pair", "balancer": "round-robin",
                     "targets": [{"host": "127.0.0.1", "port": PORT_A}, {"host": "127.0.0.1", "port": PORT_B}]},
