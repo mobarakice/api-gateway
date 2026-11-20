@@ -118,6 +118,33 @@ public final class EtcdHttpClient implements AutoCloseable {
         return call("/v3/kv/put", EtcdJson.putRequest(key, value, lease)).map(EtcdJson::revision);
     }
 
+    /** Grants a lease with the given time-to-live. */
+    public Future<Lease> leaseGrant(long ttlSeconds) {
+        ObjectNode body = EtcdJson.MAPPER.createObjectNode().put("TTL", Long.toString(ttlSeconds));
+        return call("/v3/lease/grant", body).map(n -> new Lease(EtcdJson.longValue(n, "ID"),
+                EtcdJson.longValue(n, "TTL")));
+    }
+
+    /**
+     * Renews a lease once. The HTTP gateway answers a single-message keepalive with one result and ends.
+     *
+     * @return remaining TTL in seconds; 0 when the lease no longer exists (expired or revoked)
+     */
+    public Future<Long> leaseKeepAlive(long leaseId) {
+        ObjectNode body = EtcdJson.MAPPER.createObjectNode().put("ID", Long.toString(leaseId));
+        return call("/v3/lease/keepalive", body).map(n -> EtcdJson.longValue(n.path("result"), "TTL"));
+    }
+
+    /** Revokes a lease; keys attached to it are deleted. */
+    public Future<Void> leaseRevoke(long leaseId) {
+        ObjectNode body = EtcdJson.MAPPER.createObjectNode().put("ID", Long.toString(leaseId));
+        return call("/v3/lease/revoke", body).mapEmpty();
+    }
+
+    /** A granted lease. */
+    public record Lease(long id, long ttlSeconds) {
+    }
+
     /**
      * Checks whether the authenticated user may write {@code key} without ever writing it: sends a
      * transaction whose compare ({@code version < 0}) can never be true, with a put in the success
@@ -154,6 +181,7 @@ public final class EtcdHttpClient implements AutoCloseable {
         Watch watch = new Watch(onEnd);
         ensureToken().compose(v -> {
             URI endpoint = currentEndpoint();
+            watch.endpoint = endpoint;
             RequestOptions opts = new RequestOptions()
                     .setMethod(HttpMethod.POST)
                     .setAbsoluteURI(endpoint.resolve("/v3/watch").toString())
@@ -288,9 +316,15 @@ public final class EtcdHttpClient implements AutoCloseable {
         private final AtomicBoolean ended = new AtomicBoolean();
         private final Promise<Void> endPromise = Promise.promise();
         private volatile HttpClientRequest request;
+        private volatile URI endpoint;
 
         private Watch(Handler<Throwable> onEnd) {
             this.onEnd = onEnd;
+        }
+
+        /** The member this stream is (being) opened on; null until the request is issued. */
+        public URI endpoint() {
+            return endpoint;
         }
 
         private void attach(HttpClientRequest req) {

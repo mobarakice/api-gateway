@@ -13,6 +13,7 @@ dependencies {
     implementation(project(":gateway-plugins"))
     implementation(libs.vertx.core)
     implementation(libs.slf4j.api)
+    implementation(libs.jackson.databind)
     implementation(project(":gateway-observability"))
     testImplementation(libs.awaitility)
 }

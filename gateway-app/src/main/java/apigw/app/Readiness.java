@@ -1,6 +1,7 @@
 package apigw.app;
 
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 /**
  * Readiness = a valid configuration snapshot is loaded and the gateway is not shutting down. The
@@ -33,5 +34,16 @@ final class Readiness {
 
     void markShuttingDown() {
         notReadyReason.set(SHUTTING_DOWN);
+    }
+
+    private volatile Supplier<String> configStatus = () -> "{\"source\":\"none\"}";
+
+    /** JSON describing the config source's state, served at {@code /configz}. */
+    String configStatus() {
+        return configStatus.get();
+    }
+
+    void configStatus(Supplier<String> supplier) {
+        this.configStatus = supplier;
     }
 }

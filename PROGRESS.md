@@ -7,7 +7,7 @@ Resume rule: read `CLAUDE.md` and this file, then continue from the last green m
 | M0 | Environment report, architecture, ADRs, risk register, roadmap | done (2026-11-18) |
 | M1 | Gradle multi-project, quality gates, Vert.x h1/h2/h2c, first native binary, etcd native spike | done (2026-11-18) |
 | M2 | Snapshot model, route trie, plugin SPI/registry, upstreams, LB, streaming proxy | done (2026-11-19) |
-| M3 | Config worker against etcd | not started |
+| M3 | Config worker against etcd | done (2026-11-21) |
 | M4 | Security plugins | not started |
 | M5 | Traffic plugins | not started |
 | M6 | Control plane | not started |
@@ -121,6 +121,85 @@ Not in M2 (planned later, per spec order):
 - WebSocket upgrade proxying (M5).
 - Consumer-scope plugin precedence (M4).
 - etcd as the config source (M3).
+
+## M3 results (2026-11-21, dev host: macOS arm64, Oracle GraalVM 25.0.4, etcd v3.7.3)
+
+Delivered (ADR 0014):
+- `gateway-config/worker`:
+  - `ConfigWorker` (a worker verticle). It does a full paged sync at one revision, then one prefix
+    watch with progress notifications. Changes are debounced (100 ms, up to 1 s), applied to a working
+    copy, then built, validated, compiled and swapped atomically.
+  - Compaction, or etcd moving backwards, triggers a full resync. Other errors resume after
+    exponential backoff with jitter.
+  - The watch is recycled when a heartbeat call fails, or when the client has rotated off the watch's
+    member (partition detection).
+- `EtcdSnapshotBuilder`:
+  - envelope checks: kind, id = key, schemaVersion, no unknown fields;
+  - errors are reported against etcd keys;
+  - `meta/schema-version` is required, `meta/settings` is optional.
+- `LkgStore`: SHA-256-checked JSON, written temp → fsync → atomic rename, mode 0600. It is restored at
+  boot only if this build compiles it.
+- `NodeHeartbeat`: `nodes/{gatewayId}` on a 15 s lease, renewed every 5 s, rewritten only on change,
+  re-granted after expiry, revoked on graceful shutdown.
+- etcd client: `leaseGrant`, `leaseKeepAlive`, `leaseRevoke`, `Watch.endpoint()`. `EtcdEnv` is shared
+  with `check-etcd`.
+- `config-model`: `ConfigDecoder.decodeSettings` and `decodePluginRef`.
+- `gateway-app`:
+  - etcd source wiring (`GW_ETCD_*`, `GW_LKG_DIR`, `GW_GATEWAY_ID`), mutually exclusive with
+    `GW_CONFIG_FILE`;
+  - `/configz` on the status port.
+- `test-support`: `EtcdTestCluster` (N members, TLS + auth, fixed loopback ports, kill/restart/pause).
+  `EtcdTestNode` is now a 1-member cluster.
+- Docs: ADR 0014; updates to `etcd-keys.md` (`meta/settings`, `GlobalPlugin`, heartbeat value,
+  build rules) and `configuration.md` (env vars, state table).
+
+Exit checks, all run and passing:
+- `./gradlew build` (including OSV scan): green. gateway-config unit tests: 18 (new:
+  `EtcdSnapshotBuilderTest`, `LkgStoreTest`, `BackoffTest`).
+- `./gradlew nativeTest`: 76/76 as native images. gateway-config now applies `gw.native-conventions`
+  (18/18 native).
+- `:integration-tests:integrationTest` 23/23 and `:nativeIntegrationTest` 23/23, against real etcd
+  containers with TLS + auth and the gateway's read-only role.
+  - `ConfigWorkerIT` (single node):
+    - sync, watch and heartbeat (lease attached, key removed on graceful stop, no password in logs);
+    - invalid change rejected (previous snapshot serving, still ready, error names `routes/bad`, valid
+      changes in the same state held back, malformed JSON rejected, fix applies everything);
+    - etcd down at boot with no LKG (503 / NO_CONFIG, recovers);
+    - etcd restart (kill -9: SERVING_STALE and still 200, watch resumes);
+    - network partition via a paused container;
+    - LKG restore with etcd down, plus a corrupted LKG never served.
+  - `EtcdClusterIT` (3 members):
+    - leader change via `move-leader`, then leader crash;
+    - partitioned member abandoned for a healthy one;
+    - compaction while disconnected forces a full resync.
+- The cluster partition test found a real bug, fixed before commit (ADR 0014, "Partitions"): a
+  rotated client left the watch on a frozen member.
+
+Dev-host measurements from the integration tests. These are not reference-host results and not
+benchmarks:
+
+| | JVM (GraalVM JDK 25.0.4) | Native |
+|---|---|---|
+| etcd `put` → first 200 on the new route | 108–111 ms | 99–105 ms |
+| etcd `del` → 404 | 106–115 ms | 103–112 ms |
+| spawn → ready from LKG, etcd down | 390 ms (in-process 303 ms) | 25 ms (in-process 8 ms) |
+| partitioned member → change served via another | 3.3 s | 8.2 s |
+| binary size | – | 49 MB |
+
+Notes:
+- Propagation is dominated by the 100 ms debounce.
+- Partition detection is bounded by keepalive interval plus request timeout (5 s + 3 s in the tests).
+- The spec's propagation target at fleet scale (many gateways, 10K routes) needs the reference hosts
+  and is measured in M10.
+
+Not in M3 (planned later):
+- Compiling consumers, credentials, policies, plugin-configs and certificates (M4). They are already
+  read, envelope-checked and kept in the LKG.
+- The control-plane writer, change sets, transactions with `mod_revision` compares, and history
+  (M6).
+- Watch relay or fan-out for large fleets (risk register, M10).
+- Config-worker metrics: applied revision, apply latency, rejects (M8). Today they are in
+  `/configz`, the heartbeat and logs.
 
 ## Known blockers
 

@@ -12,14 +12,15 @@ gateway's snapshot build.
 | `consumers/{id}` | control plane | yes | |
 | `credentials/{consumerId}/{id}` | control plane | yes | hashed (API keys) or envelope-encrypted; never plaintext |
 | `plugin-configs/{id}` | control plane | yes | reusable plugin config sets |
-| `global-plugins/{name}` | control plane | yes | |
+| `global-plugins/{name}` | control plane | yes | envelope `kind: GlobalPlugin`, `id` = plugin name; spec = `{enabled?, config?}` |
 | `policies/{type}/{id}` | control plane | yes | authz, rate-limit policies, cache invalidation tags |
 | `certificates/{id}` | control plane | yes | references to key material, not raw private keys |
-| `meta/schema-version` | control plane (migrations) | yes | gateway refuses a snapshot with an unsupported major version |
+| `meta/schema-version` | control plane (migrations) | yes | plain integer (`1`), not an envelope. Required: a keyspace without it is rejected |
+| `meta/settings` | control plane | yes | envelope `kind: Settings`, `id: settings`; spec = the `settings` object of the config document. Optional (defaults) |
 | `changesets/{id}` | control plane | no | drafts |
 | `history/{seq}` | control plane | no | published change sets, bounded to last N |
 | `audit/{seq}` | control plane | no | bounded recent window for the console (see audit ADR, M6) |
-| `nodes/{gatewayId}` | gateway (leased) | no | heartbeat: applied revision, status. The only gateway-writable key range — see note |
+| `nodes/{gatewayId}` | gateway (leased, 15 s TTL) | no | heartbeat `{gatewayId, version, state, appliedRevision, source, configError?}` (not an envelope). The only gateway-writable key range — see note |
 
 **Note on `nodes/`:** invariant 4 says gateways have a read-only role on the config. The gateway role
 is granted `readwrite` on `/gw/{env}/nodes/` only, and `read` on the config prefixes. The security
@@ -38,6 +39,15 @@ suite checks that the gateway role cannot write anything outside `nodes/`.
   "spec": { "...": "object body" }
 }
 ```
+
+Rules the gateway enforces when it builds a snapshot (ADR 0014):
+- `kind` must match the subtree: `Route`, `Service`, `Upstream`, `GlobalPlugin`, `Settings`.
+- `id` must equal the key's last segment, and the spec must not repeat it (the key is the identity).
+- `schemaVersion` must be supported by the running build.
+- Fields outside the envelope are rejected.
+- Values under `consumers/`, `credentials/`, `plugin-configs/`, `policies/` and `certificates/` are
+  envelope-checked and kept in the LKG. They are compiled from M4.
+- One invalid key rejects the whole state. The previous snapshot keeps serving.
 
 ## Limits
 

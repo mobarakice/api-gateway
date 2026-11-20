@@ -77,6 +77,21 @@ public final class ConfigDecoder {
         return u;
     }
 
+    public static Settings decodeSettings(JsonNode node, String path) throws ConfigException {
+        ConfigDecoder d = new ConfigDecoder();
+        Settings s = d.settings(node, path);
+        d.throwIfErrors();
+        return s;
+    }
+
+    /** One plugin reference ({@code name}, {@code enabled}, {@code config}). */
+    public static PluginRef decodePluginRef(JsonNode node, String path) throws ConfigException {
+        ConfigDecoder d = new ConfigDecoder();
+        PluginRef r = d.object(node, path) ? d.pluginRef(node, path) : null;
+        d.throwIfErrors();
+        return r;
+    }
+
     private void throwIfErrors() throws ConfigException {
         if (!errors.isEmpty()) {
             throw new ConfigException(errors);
@@ -206,16 +221,20 @@ public final class ConfigDecoder {
         List<PluginRef> out = new ArrayList<>();
         each(parent, parentPath, field, (item, p) -> {
             if (object(item, p)) {
-                known(item, p, Set.of("name", "enabled", "config"));
-                JsonNode config = item.has("config") ? item.get("config") : MAPPER.createObjectNode();
-                if (!config.isObject()) {
-                    errors.add(new ConfigError(p + ".config", "must be an object"));
-                }
-                out.add(new PluginRef(stringField(item, p, "name", null), boolField(item, p, "enabled", true),
-                        config.deepCopy()));
+                out.add(pluginRef(item, p));
             }
         });
         return out;
+    }
+
+    private PluginRef pluginRef(JsonNode item, String p) {
+        known(item, p, Set.of("name", "enabled", "config"));
+        JsonNode config = item.has("config") ? item.get("config") : MAPPER.createObjectNode();
+        if (!config.isObject()) {
+            errors.add(new ConfigError(p + ".config", "must be an object"));
+        }
+        return new PluginRef(stringField(item, p, "name", null), boolField(item, p, "enabled", true),
+                config.deepCopy());
     }
 
     // ---- primitive helpers -------------------------------------------------------------------

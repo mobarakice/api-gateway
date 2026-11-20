@@ -17,11 +17,11 @@ if you change a command, module, or convention, update this file in the same com
 | `gateway-core/` | Request pipeline, routing trie, immutable snapshot model, plugin SPI and registry |
 | `gateway-plugins/` | Built-in plugins: auth, authz, rate limit, cache, CORS, transforms, IP rules |
 | `gateway-proxy/` | Upstream pools, load balancing, circuit breaker, retries, streaming proxy |
-| `gateway-config/` | etcd client wrapper, config worker, snapshot compiler, last-known-good store |
+| `gateway-config/` | etcd HTTP/JSON client, config worker (`worker/`: sync, watch, LKG, heartbeat — ADR 0014), file source |
 | `gateway-observability/` | Metrics, tracing, and the SLF4J JSON log provider (ADR 0007) |
 | `gateway-app/` | `main`, wiring, Native Image metadata |
 | `control-plane/` | Admin API, validation, change sets, etcd writer, audit |
-| `test-support/` | Test-only helpers: throwaway PKI (`TestPki`), etcd Testcontainers node with TLS + auth + gateway role. Never shipped |
+| `test-support/` | Test-only helpers: throwaway PKI (`TestPki`), etcd Testcontainers cluster/node (`EtcdTestCluster`, `EtcdTestNode`) with TLS + auth + gateway role, fixed ports, kill/restart/pause. Never shipped |
 | `admin-console/` | React + TypeScript frontend (pnpm; not a Gradle project) |
 | `integration-tests/`, `benchmarks/` | Testcontainers suites; JMH and load scenarios |
 | `deployment/` | Dockerfiles, Compose, Kustomize base and overlays |
@@ -33,7 +33,9 @@ if you change a command, module, or convention, update this file in the same com
 ```bash
 # Java (always use the wrapper)
 ./gradlew build                      # compile, unit tests, Checkstyle, SpotBugs, dependency scan
-GW_CONFIG_FILE=path/to/gateway.json ./gradlew :gateway-app:run   # gateway on the JVM (dev); env vars: docs/operations/configuration.md
+GW_CONFIG_FILE=path/to/gateway.json ./gradlew :gateway-app:run   # gateway on the JVM (dev), file config
+GW_ETCD_ENDPOINTS=https://localhost:2379 GW_ETCD_CA=... GW_ETCD_USER=gateway GW_ETCD_PASSWORD_FILE=... \
+  GW_ETCD_PREFIX=/gw/dev/ GW_LKG_DIR=/tmp/gw-lkg ./gradlew :gateway-app:run   # etcd config (all env vars: docs/operations/configuration.md)
 ./gradlew :control-plane:run         # Admin API on the JVM (dev)
 ./gradlew :integration-tests:integrationTest        # Testcontainers suites, gateway as JVM process (needs Docker)
 ./gradlew :integration-tests:nativeIntegrationTest  # same suites against the native binary (needs Docker)

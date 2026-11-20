@@ -170,6 +170,10 @@ final class EtcdJson {
         }
     }
 
+    static long longValue(JsonNode n, String field) {
+        return longField(n, field);
+    }
+
     private static long longField(JsonNode n, String field) {
         JsonNode v = n.get(field);
         if (v == null || v.isNull()) {

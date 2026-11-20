@@ -8,7 +8,8 @@ import io.vertx.core.http.HttpServerResponse;
 
 /**
  * Probe endpoints on the internal status port: {@code /healthz} (process is alive and serving) and
- * {@code /readyz} (a valid snapshot is loaded and the gateway is not draining).
+ * {@code /readyz} (a valid snapshot is loaded and the gateway is not draining), and {@code /configz}
+ * (config source state: revision, last error). Internal port only.
  */
 final class StatusHandler implements Handler<HttpServerRequest> {
 
@@ -27,6 +28,7 @@ final class StatusHandler implements Handler<HttpServerRequest> {
         HttpServerResponse response = request.response().putHeader(HttpHeaders.CONTENT_TYPE, APPLICATION_JSON);
         switch (request.path()) {
             case "/healthz" -> response.end(UP);
+            case "/configz" -> response.end(readiness.configStatus());
             case "/readyz" -> {
                 String reason = readiness.reason();
                 if (reason == null) {

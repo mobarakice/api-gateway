@@ -7,11 +7,18 @@
 | `GW_BIND_HOST` | `0.0.0.0` | Listen address for all listeners |
 | `GW_HTTP_PORT` | `8080` | Plaintext listener: HTTP/1.1 + h2c (prior knowledge and upgrade) |
 | `GW_HTTPS_PORT` | `8443` | TLS listener (only with `GW_TLS_CERT` + `GW_TLS_KEY`): h2 via ALPN, HTTP/1.1 |
-| `GW_STATUS_PORT` | `9901` | `/healthz`, `/readyz`; never expose publicly |
+| `GW_STATUS_PORT` | `9901` | `/healthz`, `/readyz`, `/configz`; never expose publicly |
 | `GW_EVENT_LOOPS` | CPU count | Event loops (one traffic verticle each) |
 | `GW_TLS_CERT`, `GW_TLS_KEY` | – | PEM chain and PKCS#8 key; set both or neither |
 | `GW_SHUTDOWN_GRACE_SECONDS` | `20` | Drain time on SIGTERM |
-| `GW_CONFIG_FILE` | – | Whole-config JSON file (M2). etcd arrives in M3 |
+| `GW_ETCD_ENDPOINTS` | – | Comma-separated `https://host:port` list. Selects etcd as the config source |
+| `GW_ETCD_CA` | – | PEM CA bundle for etcd's server certificate |
+| `GW_ETCD_USER`, `GW_ETCD_PASSWORD_FILE` | – | Gateway role user; the password is read from the file, never from an env value |
+| `GW_ETCD_PREFIX` | – | Config prefix, e.g. `/gw/prod/` (required with etcd) |
+| `GW_ETCD_TIMEOUT_MS` | `5000` | Per-request etcd timeout |
+| `GW_LKG_DIR` | – | Directory for the last-known-good snapshot. Without it, a restart during an etcd outage serves nothing |
+| `GW_GATEWAY_ID` | `$HOSTNAME` | ID for the `nodes/{id}` heartbeat (no `/`) |
+| `GW_CONFIG_FILE` | – | Whole-config JSON file (dev/tests). Mutually exclusive with `GW_ETCD_ENDPOINTS` |
 | `GW_CONFIG_POLL_MS` | `1000` | File change poll interval (50–600000) |
 | `GW_LOG_LEVEL` | `INFO` | Root log level |
 
@@ -80,3 +87,19 @@ file, then rename). A change that fails to parse, validate or compile is logged
 (`config file change rejected`) and the current snapshot keeps serving. Upstream pools survive a reload
 unless that upstream's connection settings or targets changed; changed or removed pools are retired
 gracefully (in-flight requests complete, up to 30 s).
+
+## etcd source (M3)
+With `GW_ETCD_ENDPOINTS` set, the gateway reads the keyspace in `docs/architecture/etcd-keys.md`. The
+objects are the same as in the file document above, one envelope per key. The behaviour (ADR 0014):
+
+| Situation | Serving | `/readyz` | `/configz` `state` |
+|---|---|---|---|
+| Synced and watching | newest valid revision | 200 | `SERVING` |
+| Newest revision invalid | previous snapshot | 200 | `INVALID_CONFIG` (+ `configError` naming keys) |
+| etcd unreachable, had a snapshot | current snapshot | 200 | `SERVING_STALE` (+ `etcdError`) |
+| Boot with etcd down, valid LKG | LKG snapshot | 200 | `SERVING_STALE`, `snapshotSource: lkg` |
+| Boot with etcd down, no LKG | 503 | 503 | `NO_CONFIG` |
+| Watch compacted | current snapshot during resync | 200 | `SYNCING` → `SERVING` |
+
+Changes are applied about 100 ms after the last event of a burst (at most 1 s while a burst continues).
+Retries back off from 200 ms to 10 s with jitter.

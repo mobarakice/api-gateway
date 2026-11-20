@@ -1,11 +1,19 @@
 package apigw.app;
 
 import apigw.config.etcd.EtcdCheckCommand;
+import apigw.config.etcd.EtcdEnv;
 import apigw.config.file.FileConfigSource;
+import apigw.config.worker.ConfigWorker;
+import apigw.config.worker.WorkerStatus;
+import apigw.core.pipeline.RequestIds;
 import apigw.core.snapshot.SnapshotCompiler;
 import apigw.core.snapshot.SnapshotHolder;
 import apigw.plugins.BuiltinPlugins;
 import apigw.observability.logging.JsonLogging;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.vertx.core.DeploymentOptions;
+import io.vertx.core.ThreadingModel;
 import io.vertx.core.Vertx;
 import io.vertx.core.VertxOptions;
 import java.io.PrintStream;
@@ -14,9 +22,11 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,6 +41,8 @@ import org.slf4j.LoggerFactory;
 public final class GatewayMain {
 
     private static final Logger LOG = LoggerFactory.getLogger(GatewayMain.class);
+    /** Reported in the node heartbeat. */
+    static final String BUILD_VERSION = "0.3.0-m3";
 
     private GatewayMain() {
     }
@@ -84,9 +96,19 @@ public final class GatewayMain {
     private static void startConfig(Vertx vertx, Map<String, String> env, SnapshotCompiler compiler,
             SnapshotHolder snapshots, Readiness readiness, long startedNanos) {
         String file = env.get("GW_CONFIG_FILE");
-        if (file == null || file.isBlank()) {
-            readiness.markNotReady("no configuration source (set GW_CONFIG_FILE)");
-            LOG.error("no configuration source configured; set GW_CONFIG_FILE");
+        boolean hasFile = file != null && !file.isBlank();
+        if (hasFile && EtcdEnv.configured(env)) {
+            readiness.markNotReady("both GW_CONFIG_FILE and GW_ETCD_ENDPOINTS are set");
+            LOG.error("configure exactly one source: GW_CONFIG_FILE or GW_ETCD_ENDPOINTS");
+            return;
+        }
+        if (EtcdEnv.configured(env)) {
+            startEtcd(vertx, env, compiler, snapshots, readiness, startedNanos);
+            return;
+        }
+        if (!hasFile) {
+            readiness.markNotReady("no configuration source (set GW_ETCD_ENDPOINTS or GW_CONFIG_FILE)");
+            LOG.error("no configuration source configured; set GW_ETCD_ENDPOINTS or GW_CONFIG_FILE");
             return;
         }
         Duration poll = Duration.ofMillis(pollMillis(env));
@@ -100,6 +122,66 @@ public final class GatewayMain {
                     LOG.error("initial configuration rejected: {}", e.getMessage());
                 })
                 .onComplete(ignored -> source.watch(poll));
+    }
+
+    private static void startEtcd(Vertx vertx, Map<String, String> env, SnapshotCompiler compiler,
+            SnapshotHolder snapshots, Readiness readiness, long startedNanos) {
+        ConfigWorker.Settings settings;
+        try {
+            long timeoutMs = Long.parseLong(env.getOrDefault("GW_ETCD_TIMEOUT_MS", "5000").trim());
+            Optional<Path> lkgDir = Optional.ofNullable(env.get("GW_LKG_DIR")).filter(s -> !s.isBlank())
+                    .map(Path::of);
+            settings = ConfigWorker.Settings.defaults(EtcdEnv.clientConfig(env, Duration.ofMillis(timeoutMs)),
+                    EtcdEnv.prefix(env), lkgDir, gatewayId(env), BUILD_VERSION);
+            if (lkgDir.isEmpty()) {
+                LOG.warn("GW_LKG_DIR not set: a restart while etcd is unreachable will not serve traffic");
+            }
+        } catch (IllegalArgumentException e) {
+            readiness.markNotReady("invalid etcd settings");
+            LOG.error("invalid etcd settings: {}", e.getMessage());
+            return;
+        }
+        AtomicBoolean first = new AtomicBoolean(true);
+        ConfigWorker worker = new ConfigWorker(settings, compiler, snapshots, s -> {
+            readiness.markReady();
+            if (first.compareAndSet(true, false)) {
+                LOG.info("ready revision={} readyMs={}", s.revision(),
+                        TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos));
+            }
+        });
+        readiness.configStatus(() -> configJson(worker.status(), settings.gatewayId()));
+        vertx.deployVerticle(worker, new DeploymentOptions().setThreadingModel(ThreadingModel.WORKER))
+                .onFailure(e -> LOG.error("config worker failed to start: {}", e.toString()));
+    }
+
+    private static String configJson(WorkerStatus s, String gatewayId) {
+        ObjectNode n = new ObjectMapper().createObjectNode()
+                .put("source", "etcd")
+                .put("gatewayId", gatewayId)
+                .put("state", s.state().name())
+                .put("appliedRevision", s.appliedRevision())
+                .put("etcdRevision", s.etcdRevision())
+                .put("snapshotSource", s.source())
+                .put("updatedAt", s.updatedAt().toString());
+        if (s.configError() != null) {
+            n.put("configError", s.configError());
+        }
+        if (s.etcdError() != null) {
+            n.put("etcdError", s.etcdError());
+        }
+        return n.toString();
+    }
+
+    /** {@code GW_GATEWAY_ID}, else the host name (the pod name on Kubernetes), else a random ID. */
+    static String gatewayId(Map<String, String> env) {
+        String id = env.get("GW_GATEWAY_ID");
+        if (id == null || id.isBlank()) {
+            id = env.get("HOSTNAME");
+        }
+        if (id == null || id.isBlank()) {
+            id = "gw-" + RequestIds.next();
+        }
+        return id.trim();
     }
 
     private static long pollMillis(Map<String, String> env) {

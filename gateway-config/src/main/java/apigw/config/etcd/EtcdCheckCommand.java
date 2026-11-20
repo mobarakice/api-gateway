@@ -5,16 +5,9 @@ import io.vertx.core.Future;
 import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
 import io.vertx.core.VertxOptions;
-import java.io.IOException;
 import java.io.PrintStream;
-import java.net.URI;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.time.Duration;
-import java.util.Arrays;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ExecutionException;
@@ -157,21 +150,14 @@ public final class EtcdCheckCommand {
     }
 
     private static EtcdClientConfig config(Map<String, String> opts, Map<String, String> env, Duration timeout) {
-        List<URI> endpoints = Arrays.stream(required(opts, env, "endpoints", "GW_ETCD_ENDPOINTS").split(","))
-                .map(String::trim).filter(s -> !s.isEmpty()).map(URI::create).toList();
-        Optional<Path> ca = optional(opts, env, "cacert", "GW_ETCD_CA").map(Path::of);
-        Optional<String> user = optional(opts, env, "user", "GW_ETCD_USER");
-        Optional<Password> password = optional(opts, env, "password-file", "GW_ETCD_PASSWORD_FILE")
-                .map(f -> Password.of(readSecret(Path.of(f))));
-        return new EtcdClientConfig(endpoints, ca, Optional.empty(), Optional.empty(), user, password, timeout);
-    }
-
-    private static String readSecret(Path file) {
-        try {
-            return Files.readString(file, StandardCharsets.UTF_8).strip();
-        } catch (IOException e) {
-            throw new IllegalArgumentException("cannot read password file " + file, e);
-        }
+        Map<String, String> merged = new HashMap<>(env);
+        Map.of("endpoints", EtcdEnv.ENDPOINTS, "cacert", EtcdEnv.CA, "user", EtcdEnv.USER,
+                "password-file", EtcdEnv.PASSWORD_FILE).forEach((opt, var) -> {
+                    if (opts.containsKey(opt)) {
+                        merged.put(var, opts.get(opt));
+                    }
+                });
+        return EtcdEnv.clientConfig(merged, timeout);
     }
 
     private static String required(Map<String, String> opts, Map<String, String> env, String opt, String var) {
