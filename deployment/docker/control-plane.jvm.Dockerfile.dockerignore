@@ -1,0 +1,4 @@
+# Context for the JVM images is the repository root: send only the built distributions.
+*
+!gateway-app/build/install/gateway/
+!control-plane/build/install/control-plane/

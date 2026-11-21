@@ -1,0 +1,8 @@
+{
+  "apiBase": "",
+  "oidc": {
+    "authority": "https://localhost:8543/realms/gateway",
+    "clientId": "admin-console",
+    "scope": "openid"
+  }
+}

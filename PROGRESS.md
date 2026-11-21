@@ -11,7 +11,7 @@ Resume rule: read `CLAUDE.md` and this file, then continue from the last green m
 | M4 | Security plugins: JWT, OIDC/JWKS, API keys, RBAC/ABAC, tenant isolation, SSRF | done (2026-11-21) |
 | M5 | Traffic plugins: rate limit, cache, breaker, retries, health, transforms, CORS, IP rules | done (2026-11-21) |
 | M6 | Control plane | done (2026-11-21) |
-| M7 | Admin console | not started |
+| M7 | Admin console | done (2026-11-21) |
 | M8 | Observability | not started |
 | M9 | Docker, Kubernetes, hardening | not started |
 | M10 | Benchmarks, profiling, JVM vs native report | not started |
@@ -452,6 +452,68 @@ Not in M6 (planned later):
 - Propagation was measured on the dev host with a local etcd cluster in Docker, not on the reference
   topology.
 
+## M7 results (2026-11-21, dev host: macOS arm64, Node 22.13, Docker Desktop, Chromium 158 headless)
+
+Built:
+- **`admin-console/`** (ADR 0022): React 19, TypeScript 6 strict, Vite 8, TanStack Query, React Router 7.
+  - Screens: gateways, routes, services, upstreams, consumers and credentials, plugin configs,
+    global plugins, authz policies, revoked tokens, cache purges, certificates, settings, the plugin
+    catalog, change sets (ops, validate, diff, publish), history and rollback, and audit.
+  - Sign-in: OIDC authorization code + PKCE (`oidc-client-ts`) with tokens in memory. A reload re-enters
+    through the IdP's SSO session.
+  - Plugin forms render from the served JSON Schemas, with client validation (`@cfworker/json-schema`,
+    no `eval`). Server field errors appear on the field and in an error summary.
+  - The UI is role-aware.
+  - API keys are shown once.
+  - Publish and rollback always show a diff and need confirmation.
+- **Control plane:** `CP_CORS_ORIGINS` (exact origins, no credentials) plus `CorsTest`.
+- **Local stack:** `deployment/docker/compose.yml` runs etcd (TLS + auth), Redis (ACL), an echo upstream,
+  2 gateways, the control plane, Keycloak 26 (realm with 4 role users) and the console on
+  static-web-server.
+  - A generated dev PKI and passwords live in `.local/` (git-ignored).
+  - Services run hardened: non-root, read-only, all capabilities dropped.
+- **Docs:** ADR 0022, `docs/operations/admin-console.md`, and the CORS addition to `control-plane.md` and
+  the OpenAPI spec.
+
+Checks:
+- `pnpm lint` (typescript-eslint strict type-checked plus jsx-a11y strict; `localStorage` banned):
+  clean.
+- `pnpm typecheck`: clean.
+- `pnpm test` (Vitest): 20/20.
+  - Every built-in plugin schema renders, and client validation maps errors like the server.
+  - Role gating, If-Match on staging, inline server errors, the publish confirmation, and the API key
+    shown once and then dropped.
+- `pnpm e2e` (Playwright against the Compose stack, no mocks): 8/8, two consecutive runs.
+  - The console is served with a strict CSP, including Trusted Types, and has no inline script or style.
+  - **No CSP violation** was recorded on any console page (a `securitypolicyviolation` listener plus
+    console errors).
+  - axe-core WCAG 2.0/2.1/2.2 A+AA reports 0 violations on gateways, settings, the route editor with
+    plugin forms, the route editor with errors, the change set, the publish dialog and audit.
+  - Flow:
+    - an admin allows the Compose network;
+    - an editor stages an upstream, a service, a consumer with an API key, and a route with key-auth
+      plus rate-limit through the schema form, then validates;
+    - the viewer is read-only;
+    - a server field error shows on its field;
+    - a publisher publishes after reviewing the diff;
+    - both gateways serve the route with the API key (401 without it) **232–269 ms after the publish
+      click** (target ≤ 2 s);
+    - a rollback removes the route from both gateways;
+    - the admin sees the audit trail, and sign-out works.
+- `./gradlew build`: green. `:control-plane:nativeTest`: 25/25. `ControlPlaneIT` (JVM): green.
+
+Not in M7 (planned later):
+- Native, distroless images for the gateway and control plane, and Kubernetes manifests including
+  the console's Deployment and NetworkPolicy: M9. The Compose stack uses JVM images today.
+- Staging checks each object on its own: decoding, unknown fields, references-free rules. Some rules
+  (for example route path syntax) are only reported by **Validate** and publish, which run the full
+  compiler.
+- Tenant-scoped admin roles: still global roles.
+- Console metrics and RUM: none. A visual design review on real devices: not done; the checks were
+  axe plus keyboard-only flows in e2e.
+- Upgrade TypeScript 7, ESLint 10, React Router 8 and jsdom 30+ once typescript-eslint and
+  jsx-a11y support them and the toolchain moves to Node ≥ 22.22.
+
 ## Known blockers
 
 - BLOCKED: reference benchmark host. The spec's reference host (2 vCPU / 4 GB, Linux) and a separate
@@ -459,6 +521,6 @@ Not in M6 (planned later):
   Requester must provide two Linux hosts (gateway + load generator) and a third for the upstream.
 - BLOCKED: Kubernetes cluster for multi-replica benchmarks and the rollout drain test. Requester must
   provide a CNCF-conformant cluster >= 1.30 (kind in Docker can cover functional checks only).
-- No external OIDC provider: OIDC tests use a local HTTPS discovery/JWKS fixture with real keys and
-  TLS (`SecurityPipelineTest`, `SecurityIT`). An interop test against a real IdP (e.g. a Keycloak
-  container) is not done yet.
+- OIDC interop: the console e2e runs against a real IdP (Keycloak 26 in Compose) through the
+  control plane. The gateway's `jwt` plugin is still tested with a local HTTPS discovery/JWKS
+  fixture only (`SecurityPipelineTest`, `SecurityIT`).

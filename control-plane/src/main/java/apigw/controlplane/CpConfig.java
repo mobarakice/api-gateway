@@ -27,7 +27,7 @@ import java.util.Set;
 public record CpConfig(String bindHost, int port, Optional<Path> tlsCert, Optional<Path> tlsKey,
         EtcdClientConfig etcd, String prefix, AdminAuth.Settings oidc, Optional<Path> jwksFile,
         Optional<URI> jwksUri, boolean discovery, Optional<Path> oidcCa, List<Cidr> trustedProxies,
-        Optional<Path> auditFile, int auditWindow, Limits limits) {
+        Optional<Path> auditFile, int auditWindow, Limits limits, Set<String> corsOrigins) {
 
     public static CpConfig fromEnvironment(Map<String, String> env) {
         String host = opt(env, "CP_BIND_HOST").orElse("0.0.0.0");
@@ -96,7 +96,17 @@ public record CpConfig(String bindHost, int port, Optional<Path> tlsCert, Option
                 integer(env, "CP_HISTORY_LIMIT", 100, 1, 10_000));
         return new CpConfig(host, port, cert, key, etcd, prefix, oidc, jwksFile, jwksUri, discovery,
                 opt(env, "CP_OIDC_CA").map(Path::of), List.copyOf(proxies), opt(env, "CP_AUDIT_FILE").map(Path::of),
-                integer(env, "CP_AUDIT_WINDOW", 1000, 10, 100_000), limits);
+                integer(env, "CP_AUDIT_WINDOW", 1000, 10, 100_000), limits, corsOrigins(env));
+    }
+
+    private static Set<String> corsOrigins(Map<String, String> env) {
+        Set<String> out = new java.util.LinkedHashSet<>();
+        for (String o : opt(env, "CP_CORS_ORIGINS").orElse("").split(",")) {
+            if (!o.isBlank()) {
+                out.add(apigw.controlplane.api.Cors.requireOrigin(o.strip()));
+            }
+        }
+        return Set.copyOf(out);
     }
 
     private static Optional<String> opt(Map<String, String> env, String name) {

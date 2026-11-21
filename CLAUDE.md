@@ -22,9 +22,9 @@ if you change a command, module, or convention, update this file in the same com
 | `gateway-app/` | `main`, wiring, Native Image metadata |
 | `control-plane/` | Admin API (Vert.x, `api/`), OIDC auth + roles (`auth/`), change sets, dry-run validation and single-txn publish/rollback (`changes/`, ADR 0020), audit (`audit/`, ADR 0021), etcd store (`store/`), migrations |
 | `test-support/` | Test-only helpers: throwaway PKI (`TestPki`), etcd Testcontainers cluster/node (`EtcdTestCluster`, `EtcdTestNode`) with TLS + auth + gateway and control-plane roles, fixed ports, kill/restart/pause; Redis node (`RedisTestNode`, ACL user, pause/resume). Never shipped |
-| `admin-console/` | React + TypeScript frontend (pnpm; not a Gradle project) |
+| `admin-console/` | React 19 + TypeScript (strict) + Vite console (pnpm; not a Gradle project; ADR 0022): `src/api` (client, TanStack Query hooks), `src/auth` (OIDC code + PKCE, memory-only tokens), `src/schema` (JSON Schema forms + `@cfworker/json-schema`), `src/forms`, `src/pages`; Playwright e2e in `e2e/` |
 | `integration-tests/`, `benchmarks/` | Testcontainers suites; JMH and load scenarios |
-| `deployment/` | Dockerfiles, Compose, Kustomize base and overlays |
+| `deployment/` | Dockerfiles, Compose, Kustomize base and overlays. `docker/compose.yml` = local stack (etcd TLS+auth, Redis, echo, 2 gateways, control plane, Keycloak, console); its init service generates certs/passwords into git-ignored `docker/.local/` |
 | `performance/` | k6/wrk2 scripts and raw results |
 | `docs/` | Architecture, ADRs (`docs/adr/`), API (OpenAPI), operations, performance |
 
@@ -47,15 +47,16 @@ GW_ETCD_ENDPOINTS=https://localhost:2379 GW_ETCD_CA=... GW_ETCD_USER=gateway GW_
 ./gradlew :gateway-app:installDist   # jvm-prod distribution -> gateway-app/build/install/gateway/
 gateway-app/build/native/nativeCompile/gateway check-etcd --help   # etcd connectivity/role check
 
-# Local stack: etcd, Redis, echo upstream, gateway, control plane, console
-docker compose -f deployment/docker/compose.yml up -d
+# Local stack: etcd, Redis, echo upstream, 2 gateways, control plane, Keycloak, console (JVM images until M9)
+./gradlew :gateway-app:installDist :control-plane:installDist
+docker compose -f deployment/docker/compose.yml up -d --build   # console http://localhost:8280; users: docs/operations/admin-console.md
 
 # Admin console
 cd admin-console
 pnpm install
 pnpm dev          # dev server, proxies /admin to the local control plane
 pnpm lint && pnpm typecheck && pnpm test
-pnpm e2e          # Playwright against the Compose stack
+pnpm e2e          # Playwright against the Compose stack (once: pnpm exec playwright install chromium)
 
 # Kubernetes manifests
 kustomize build deployment/kubernetes/overlays/<env> | kubeconform -strict -
@@ -153,7 +154,9 @@ For anything in the request path or config worker, also run the native build and
   Use route ID, never raw path, as a metric label.
 - Frontend: TypeScript strict, no `any` without a comment explaining why. API state via TanStack
   Query. Plugin forms render from the schema served by `GET /admin/v1/plugins/{name}/schema`.
-  Tokens in memory only, never `localStorage`. No inline scripts (strict CSP).
+  Tokens in memory only, never `localStorage`. No inline scripts or `style` props (strict CSP with Trusted
+  Types); no `eval`-based libraries (e.g. Ajv) in the browser. Pin npm versions exactly (`.npmrc` save-exact).
+  Every page must pass axe (WCAG 2.2 AA) in the e2e suite.
 
 ## Testing
 

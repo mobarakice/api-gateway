@@ -1,0 +1,69 @@
+{
+  "realm": "gateway",
+  "displayName": "API Gateway (local dev)",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "rememberMe": false,
+  "bruteForceProtected": true,
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "roles": {
+    "realm": [
+      { "name": "viewer", "description": "Read configuration" },
+      { "name": "editor", "description": "Stage changes" },
+      { "name": "publisher", "description": "Publish and roll back" },
+      { "name": "admin", "description": "Settings, certificates, audit" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "admin-console",
+      "name": "API Gateway console",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": true,
+      "redirectUris": ["http://localhost:8280/callback", "http://localhost:5173/callback"],
+      "webOrigins": ["http://localhost:8280", "http://localhost:5173"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:8280/##http://localhost:5173/"
+      },
+      "protocolMappers": [
+        {
+          "name": "admin-api audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": { "included.custom.audience": "admin-api", "access.token.claim": "true", "id.token.claim": "false" }
+        },
+        {
+          "name": "roles claim",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "roles", "multivalued": "true", "jsonType.label": "String",
+            "access.token.claim": "true", "id.token.claim": "false", "userinfo.token.claim": "false"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    { "username": "viewer", "enabled": true, "email": "viewer@example.test", "emailVerified": true,
+      "firstName": "Vera", "lastName": "Viewer", "realmRoles": ["viewer"],
+      "credentials": [{ "type": "password", "value": "__VIEWER__", "temporary": false }] },
+    { "username": "editor", "enabled": true, "email": "editor@example.test", "emailVerified": true,
+      "firstName": "Eddie", "lastName": "Editor", "realmRoles": ["editor"],
+      "credentials": [{ "type": "password", "value": "__EDITOR__", "temporary": false }] },
+    { "username": "publisher", "enabled": true, "email": "publisher@example.test", "emailVerified": true,
+      "firstName": "Pat", "lastName": "Publisher", "realmRoles": ["publisher"],
+      "credentials": [{ "type": "password", "value": "__PUBLISHER__", "temporary": false }] },
+    { "username": "admin", "enabled": true, "email": "admin@example.test", "emailVerified": true,
+      "firstName": "Ada", "lastName": "Admin", "realmRoles": ["admin"],
+      "credentials": [{ "type": "password", "value": "__ADMIN__", "temporary": false }] }
+  ]
+}

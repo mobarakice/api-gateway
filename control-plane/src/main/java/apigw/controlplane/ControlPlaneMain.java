@@ -90,7 +90,12 @@ public final class ControlPlaneMain {
             } else {
                 LOG.warn("CP_TLS_CERT not set: the Admin API is plaintext; terminate TLS in front of it");
             }
-            return vertx.createHttpServer(o).requestHandler(api).listen();
+            io.vertx.core.Handler<io.vertx.core.http.HttpServerRequest> handler = config.corsOrigins().isEmpty() ? api
+                    : new apigw.controlplane.api.Cors(config.corsOrigins(), api);
+            if (!config.corsOrigins().isEmpty()) {
+                LOG.info("CORS origins {}", config.corsOrigins());
+            }
+            return vertx.createHttpServer(o).requestHandler(handler).listen();
         }).onSuccess(s -> {
             server.set(s);
             LOG.info("control plane listening port={} tls={} prefix={} startupMs={}", s.actualPort(),

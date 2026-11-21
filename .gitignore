@@ -28,3 +28,6 @@ performance/results/**/*.raw
 performance/results/**/*.hdr.gz
 # OS
 .DS_Store
+
+# Local Compose stack: generated dev certs and secrets
+deployment/docker/.local/

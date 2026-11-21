@@ -10,6 +10,10 @@ info:
     with a `requestId`; validation errors name the field (`path`) and the rule (`message`).
     Objects carry a strong ETag (their etcd `mod_revision`); changing or deleting an existing object
     requires `If-Match`.
+
+    CORS: only origins listed in `CP_CORS_ORIGINS` (the admin console) get CORS headers; allowed request
+    headers are `authorization`, `content-type`, `if-match`; `etag`, `location`, `retry-after` and
+    `x-request-id` are exposed. No credentials (cookies) are ever used.
 servers:
   - url: https://control-plane.example/admin/v1
 security:

@@ -26,6 +26,7 @@ in etcd (ADR 0020). It is stateless: run 2+ replicas behind a load balancer.
 | `CP_OIDC_CA` | JDK trust | PEM CA for the JWKS / discovery endpoint |
 | `CP_OIDC_ROLES_CLAIM` / `CP_OIDC_ROLE_PREFIX` | `roles` / empty | claim (array or space-separated) holding `viewer`, `editor`, `publisher`, `admin` (with the prefix, e.g. `gw-admin`) |
 | `CP_OIDC_SKEW_SECONDS` | `60` | clock skew for `exp`/`nbf`/`iat` |
+| `CP_CORS_ORIGINS` | none | exact console origins (`https://console.example.com`), comma-separated; no wildcards, no credentials |
 | `CP_TRUSTED_PROXIES` | none | CIDRs whose `X-Forwarded-For` is honoured for the audit `sourceIp` |
 | `CP_AUDIT_FILE` | none | append-only JSON Lines audit sink (ADR 0021) |
 | `CP_AUDIT_WINDOW` | `1000` | audit events kept in etcd |
