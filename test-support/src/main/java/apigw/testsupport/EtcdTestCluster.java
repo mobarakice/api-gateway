@@ -35,6 +35,11 @@ public final class EtcdTestCluster implements AutoCloseable {
 
     public static final String ROOT_USER = "root";
     public static final String GATEWAY_USER = "gateway";
+    public static final String CONTROL_PLANE_USER = "control-plane";
+    /** Subtrees the control plane may write (docs/architecture/etcd-keys.md); it only reads nodes/. */
+    public static final List<String> CONTROL_PLANE_WRITABLE = List.of("meta/", "routes/", "services/",
+            "upstreams/", "global-plugins/", "consumers/", "credentials/", "plugin-configs/", "policies/",
+            "certificates/", "changesets/", "history/", "audit/");
     static final int CLIENT_PORT = 2379;
     private static final int PEER_PORT = 2380;
     private static final String CERTS = "/etc/etcd-tls/";
@@ -47,6 +52,7 @@ public final class EtcdTestCluster implements AutoCloseable {
     private final String prefix;
     private final String rootPassword = Secrets.randomPassword();
     private final String gatewayPassword = Secrets.randomPassword();
+    private final String controlPlanePassword = Secrets.randomPassword();
 
     public EtcdTestCluster(Path tlsDir, String prefix, int size) {
         if (size < 1) {
@@ -78,6 +84,13 @@ public final class EtcdTestCluster implements AutoCloseable {
         rootCtl("role", "grant-permission", "gateway-read", "--prefix=true", "readwrite", prefix + "nodes/");
         rootCtl("user", "add", GATEWAY_USER, "--new-user-password=" + gatewayPassword);
         rootCtl("user", "grant-role", GATEWAY_USER, "gateway-read");
+        rootCtl("role", "add", "control-plane");
+        rootCtl("role", "grant-permission", "control-plane", "--prefix=true", "read", prefix);
+        for (String sub : CONTROL_PLANE_WRITABLE) {
+            rootCtl("role", "grant-permission", "control-plane", "--prefix=true", "readwrite", prefix + sub);
+        }
+        rootCtl("user", "add", CONTROL_PLANE_USER, "--new-user-password=" + controlPlanePassword);
+        rootCtl("user", "grant-role", CONTROL_PLANE_USER, "control-plane");
         return this;
     }
 
@@ -100,6 +113,10 @@ public final class EtcdTestCluster implements AutoCloseable {
 
     public String gatewayPassword() {
         return gatewayPassword;
+    }
+
+    public String controlPlanePassword() {
+        return controlPlanePassword;
     }
 
     public String rootPassword() {

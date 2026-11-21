@@ -1,0 +1,460 @@
+openapi: 3.1.0
+info:
+  title: API Gateway Admin API
+  version: "1"
+  description: |
+    Control-plane API (ADR 0020). Reads come from etcd; every write is staged in a change set and
+    reaches gateways only when the change set is published (one etcd transaction).
+
+    Roles (hierarchical): viewer < editor < publisher < admin. Errors are RFC 9457 problem details
+    with a `requestId`; validation errors name the field (`path`) and the rule (`message`).
+    Objects carry a strong ETag (their etcd `mod_revision`); changing or deleting an existing object
+    requires `If-Match`.
+servers:
+  - url: https://control-plane.example/admin/v1
+security:
+  - bearer: []
+tags:
+  - name: objects
+  - name: changesets
+  - name: history
+  - name: status
+paths:
+  /health:
+    get:
+      tags: [status]
+      security: []
+      summary: Liveness
+      responses:
+        "200": {description: Up}
+  /ready:
+    get:
+      tags: [status]
+      security: []
+      summary: Readiness (etcd reachable, keyspace initialised)
+      responses:
+        "200": {description: Ready}
+        "503": {description: Not ready}
+  /me:
+    get:
+      tags: [status]
+      summary: The caller's subject, role and permissions (viewer+)
+      responses:
+        "200":
+          description: Identity
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subject: {type: string}
+                  role: {$ref: "#/components/schemas/Role"}
+                  roles: {type: array, items: {$ref: "#/components/schemas/Role"}}
+                  permissions: {type: array, items: {$ref: "#/components/schemas/Role"}}
+        "401": {$ref: "#/components/responses/Problem"}
+        "403": {$ref: "#/components/responses/Problem"}
+  /plugins:
+    get:
+      tags: [status]
+      summary: Plugin catalog (viewer+)
+      responses:
+        "200":
+          description: Catalog
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: {type: string}
+                        version: {type: string}
+                        phases: {type: array, items: {type: string}}
+                        priority: {type: integer}
+                        authenticates: {type: boolean}
+                        title: {type: string}
+                        description: {type: string}
+                        schema: {type: string, description: Path of the JSON Schema}
+  /plugins/{name}/schema:
+    get:
+      tags: [status]
+      summary: A plugin's JSON Schema (2020-12), the same file the gateway validates against
+      parameters:
+        - {name: name, in: path, required: true, schema: {type: string}}
+      responses:
+        "200": {description: Schema, content: {application/json: {schema: {type: object}}}}
+        "404": {$ref: "#/components/responses/Problem"}
+  /gateways:
+    get:
+      tags: [status]
+      summary: Gateway heartbeats with applied revision and staleness (viewer+)
+      responses:
+        "200":
+          description: Gateways
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  configRevision: {type: integer, description: Revision of the last publish}
+                  revision: {type: integer}
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        gatewayId: {type: string}
+                        version: {type: string}
+                        state: {type: string}
+                        appliedRevision: {type: integer}
+                        source: {type: string}
+                        configError: {type: string}
+                        behind: {type: boolean}
+  /audit:
+    get:
+      tags: [status]
+      summary: Recent audit events, newest first (admin). The archive is the log pipeline / sink (ADR 0021)
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - {name: before, in: query, schema: {type: string}, description: Event id to page from}
+      responses:
+        "200": {description: Events}
+        "403": {$ref: "#/components/responses/Problem"}
+  /{collection}:
+    parameters:
+      - $ref: "#/components/parameters/Collection"
+    get:
+      tags: [objects]
+      summary: List live objects (viewer+)
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - {name: cursor, in: query, schema: {type: string}}
+      responses:
+        "200":
+          description: Page
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revision: {type: integer}
+                  items: {type: array, items: {$ref: "#/components/schemas/Object"}}
+                  nextCursor: {type: string}
+  /{collection}/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Collection"
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [objects]
+      summary: Read one live object (viewer+)
+      responses:
+        "200":
+          description: Object
+          headers: {ETag: {schema: {type: string}}}
+          content: {application/json: {schema: {$ref: "#/components/schemas/Object"}}}
+        "404": {$ref: "#/components/responses/Problem"}
+    put:
+      tags: [objects]
+      summary: Stage a create or replace (editor+; certificates admin)
+      parameters:
+        - $ref: "#/components/parameters/ChangeSet"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ObjectBody"}
+      responses:
+        "200": {$ref: "#/components/responses/Staged"}
+        "400": {$ref: "#/components/responses/Problem"}
+        "403": {$ref: "#/components/responses/Problem"}
+        "412": {$ref: "#/components/responses/Problem"}
+        "413": {$ref: "#/components/responses/Problem"}
+        "422": {$ref: "#/components/responses/Problem"}
+        "428": {$ref: "#/components/responses/Problem"}
+    delete:
+      tags: [objects]
+      summary: Stage a delete (editor+; If-Match required)
+      parameters:
+        - $ref: "#/components/parameters/ChangeSet"
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "200": {$ref: "#/components/responses/Staged"}
+        "412": {$ref: "#/components/responses/Problem"}
+        "428": {$ref: "#/components/responses/Problem"}
+  /settings:
+    get:
+      tags: [objects]
+      summary: Global settings (viewer+)
+      responses:
+        "200": {description: Settings, content: {application/json: {schema: {$ref: "#/components/schemas/Object"}}}}
+    put:
+      tags: [objects]
+      summary: Stage settings (admin)
+      parameters:
+        - $ref: "#/components/parameters/ChangeSet"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: "#/components/schemas/ObjectBody"}}}
+      responses:
+        "200": {$ref: "#/components/responses/Staged"}
+  /consumers/{consumerId}/credentials:
+    parameters:
+      - {name: consumerId, in: path, required: true, schema: {type: string}}
+    get:
+      tags: [objects]
+      summary: List credentials; hashes are never returned (viewer+)
+      responses:
+        "200": {description: Page}
+    post:
+      tags: [objects]
+      summary: Generate an API key and stage its hash (editor+). The key is in this response only.
+      parameters:
+        - $ref: "#/components/parameters/ChangeSet"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                type: {type: string, enum: [api-key]}
+                tenantId: {type: string}
+      responses:
+        "201":
+          description: Key generated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: {type: string}
+                  keyId: {type: string}
+                  apiKey: {type: string, description: "keyId.secret; shown once"}
+  /consumers/{consumerId}/credentials/{id}:
+    parameters:
+      - {name: consumerId, in: path, required: true, schema: {type: string}}
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [objects]
+      summary: Read a credential (without its hash)
+      responses:
+        "200": {description: Credential}
+    delete:
+      tags: [objects]
+      summary: Stage a credential delete (editor+; If-Match required)
+      parameters:
+        - $ref: "#/components/parameters/ChangeSet"
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "200": {$ref: "#/components/responses/Staged"}
+  /changesets:
+    get:
+      tags: [changesets]
+      summary: List drafts (viewer+)
+      responses:
+        "200": {description: Drafts}
+    post:
+      tags: [changesets]
+      summary: Create a draft (editor+)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: {type: string, maxLength: 200}
+      responses:
+        "201": {description: Created, headers: {ETag: {schema: {type: string}}}}
+  /changesets/{id}:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [changesets]
+      summary: A draft with its staged ops (credential hashes removed)
+      responses:
+        "200": {description: Draft, headers: {ETag: {schema: {type: string}}}}
+    delete:
+      tags: [changesets]
+      summary: Discard a draft (editor+)
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "204": {description: Discarded}
+  /changesets/{id}/ops:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    delete:
+      tags: [changesets]
+      summary: Unstage the op on one key (editor+)
+      parameters:
+        - {name: key, in: query, required: true, schema: {type: string}, example: routes/a}
+      responses:
+        "200": {description: Updated draft}
+  /changesets/{id}/validate:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    post:
+      tags: [changesets]
+      summary: Dry run against the live state with the gateway's compiler (editor+)
+      responses:
+        "200":
+          description: Result (200 even when invalid)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid: {type: boolean}
+                  errors: {type: array, items: {$ref: "#/components/schemas/FieldError"}}
+                  conflicts: {type: array, items: {$ref: "#/components/schemas/Conflict"}}
+  /changesets/{id}/diff:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    get:
+      tags: [changesets]
+      summary: Before/after per staged key, with staleness (viewer+)
+      responses:
+        "200": {description: Diff}
+  /changesets/{id}/publish:
+    parameters:
+      - $ref: "#/components/parameters/Id"
+    post:
+      tags: [changesets]
+      summary: Publish in one etcd transaction (publisher+)
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "200":
+          description: Published
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Published"}
+        "409": {$ref: "#/components/responses/Problem"}
+        "412": {$ref: "#/components/responses/Problem"}
+        "422": {$ref: "#/components/responses/Problem"}
+        "503": {$ref: "#/components/responses/Problem"}
+  /history:
+    get:
+      tags: [history]
+      summary: Published change sets, newest first (viewer+)
+      responses:
+        "200": {description: History}
+  /history/{seq}:
+    parameters:
+      - {name: seq, in: path, required: true, schema: {type: integer}}
+    get:
+      tags: [history]
+      summary: One entry with before/after per key (credential hashes removed)
+      responses:
+        "200": {description: Entry}
+        "404": {$ref: "#/components/responses/Problem"}
+  /history/{seq}/rollback:
+    parameters:
+      - {name: seq, in: path, required: true, schema: {type: integer}}
+    post:
+      tags: [history]
+      summary: Publish the inverse of an entry as a new transaction (publisher+)
+      responses:
+        "200": {description: Published, content: {application/json: {schema: {$ref: "#/components/schemas/Published"}}}}
+        "409": {$ref: "#/components/responses/Problem"}
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    Collection:
+      name: collection
+      in: path
+      required: true
+      schema:
+        type: string
+        enum: [routes, services, upstreams, consumers, plugin-configs, global-plugins, policies/authz,
+          policies/revoked-tokens, policies/cache-purge, certificates]
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: {type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"}
+    ChangeSet:
+      name: changeset
+      in: query
+      required: true
+      schema: {type: string}
+    IfMatch:
+      name: If-Match
+      in: header
+      schema: {type: string, example: "\"42\""}
+    Limit:
+      name: limit
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 500, default: 100}
+  responses:
+    Problem:
+      description: RFC 9457 problem details
+      content:
+        application/problem+json:
+          schema: {$ref: "#/components/schemas/Problem"}
+    Staged:
+      description: Staged in the change set
+      headers: {ETag: {schema: {type: string}, description: The change set's new ETag}}
+  schemas:
+    Role:
+      type: string
+      enum: [viewer, editor, publisher, admin]
+    ObjectBody:
+      type: object
+      additionalProperties: false
+      required: [spec]
+      properties:
+        tenantId: {type: string}
+        spec: {type: object, description: The object (see docs/operations/configuration.md); no id field}
+    Object:
+      type: object
+      properties:
+        key: {type: string}
+        revision: {type: integer}
+        etag: {type: string}
+        id: {type: string}
+        kind: {type: string}
+        schemaVersion: {type: integer}
+        tenantId: {type: string}
+        updatedAt: {type: string, format: date-time}
+        updatedBy: {type: string}
+        spec: {type: object}
+    FieldError:
+      type: object
+      properties:
+        path: {type: string, example: routes/a.spec.path}
+        message: {type: string}
+    Conflict:
+      type: object
+      properties:
+        key: {type: string}
+        expectedRevision: {type: integer}
+        actualRevision: {type: integer}
+    Published:
+      type: object
+      properties:
+        seq: {type: integer}
+        revision: {type: integer}
+        changeSetId: {type: string}
+    Problem:
+      type: object
+      properties:
+        type: {type: string}
+        title: {type: string}
+        status: {type: integer}
+        detail: {type: string}
+        instance: {type: string}
+        requestId: {type: string}
+        errors: {type: array, items: {$ref: "#/components/schemas/FieldError"}}
+        conflicts: {type: array, items: {$ref: "#/components/schemas/Conflict"}}

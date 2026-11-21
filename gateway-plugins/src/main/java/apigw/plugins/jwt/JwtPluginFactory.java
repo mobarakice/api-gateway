@@ -162,7 +162,16 @@ public final class JwtPluginFactory implements PluginFactory {
             KeySet fixed = parsed.keys();
             keys = () -> fixed;
         } else if (!secretFile.isEmpty()) {
-            byte[] secret = readSecret(Path.of(secretFile), p + ".secretFile", errors);
+            byte[] secret;
+            if (ctx.validationOnly()) {
+                // The file is on the gateways, not here: check the path only.
+                if (!Path.of(secretFile).isAbsolute()) {
+                    errors.add(new ConfigError(p + ".secretFile", "must be an absolute path"));
+                }
+                secret = null;
+            } else {
+                secret = readSecret(Path.of(secretFile), p + ".secretFile", errors);
+            }
             int min = algs.stream().mapToInt(JwtAlgorithm::size).max().orElse(32);
             if (secret != null && secret.length < min) {
                 errors.add(new ConfigError(p + ".secretFile", "secret must be at least " + min

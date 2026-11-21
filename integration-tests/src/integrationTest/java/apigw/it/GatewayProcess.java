@@ -50,6 +50,22 @@ final class GatewayProcess implements AutoCloseable {
         return new GatewayProcess(pb.start(), t0);
     }
 
+    /** The control plane as a process, in the same mode as the gateway (JVM classpath or native binary). */
+    static GatewayProcess controlPlane(Map<String, String> env) throws IOException {
+        List<String> cmd = new ArrayList<>();
+        if ("native".equals(mode())) {
+            cmd.add(required("gw.it.cpBinary"));
+        } else {
+            cmd.addAll(List.of(required("gw.it.java"), "-cp", required("gw.it.cpClasspath"),
+                    "apigw.controlplane.ControlPlaneMain"));
+        }
+        ProcessBuilder pb = new ProcessBuilder(cmd).redirectErrorStream(true);
+        pb.environment().keySet().removeIf(k -> k.startsWith("GW_") || k.startsWith("CP_"));
+        pb.environment().putAll(env);
+        long t0 = System.nanoTime();
+        return new GatewayProcess(pb.start(), t0);
+    }
+
     private static String required(String prop) {
         String v = System.getProperty(prop);
         if (v == null || v.isBlank()) {

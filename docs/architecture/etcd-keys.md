@@ -20,14 +20,19 @@ gateway's snapshot build.
 | `certificates/{id}` | control plane | yes | references to key material, not raw private keys |
 | `meta/schema-version` | control plane (migrations) | yes | plain integer (`1`), not an envelope. Required: a keyspace without it is rejected |
 | `meta/settings` | control plane | yes | envelope `kind: Settings`, `id: settings`; spec = the `settings` object of the config document. Optional (defaults) |
-| `changesets/{id}` | control plane | no | drafts |
-| `history/{seq}` | control plane | no | published change sets, bounded to last N |
-| `audit/{seq}` | control plane | no | bounded recent window for the console (see audit ADR, M6) |
+| `changesets/{id}` | control plane | no | draft: `{id, title, createdBy, createdAt, ops[{key, action: PUT\|DELETE, value?, baseRevision, stagedBy}]}`; the key in each op is relative to the prefix. Deleted by its publish (ADR 0020) |
+| `history/head` | control plane | no | `{seq, changeSetId, publishedAt}`; compared by every publish, so publishes serialise. Its `mod_revision` is the config revision `GET /admin/v1/gateways` compares heartbeats against |
+| `history/entries/{seq:012d}` | control plane | no | `{seq, changeSetId, title, publishedBy, publishedAt, rollbackOf?, ops[{key, action, before?, after?}]}`; last `CP_HISTORY_LIMIT` (100) kept |
+| `audit/{micros:016d}-{8 hex}` | control plane | no | successful mutations, written in the mutation's txn; last `CP_AUDIT_WINDOW` (1,000) kept (ADR 0021) |
 | `nodes/{gatewayId}` | gateway (leased, 15 s TTL) | no | heartbeat `{gatewayId, version, state, appliedRevision, source, configError?}` (not an envelope). The only gateway-writable key range — see note |
 
 **Note on `nodes/`:** invariant 4 says gateways have a read-only role on the config. The gateway role
 is granted `readwrite` on `/gw/{env}/nodes/` only, and `read` on the config prefixes. The security
 suite checks that the gateway role cannot write anything outside `nodes/`.
+
+**Control-plane role** (`control-plane` user in tests): `read` on the whole prefix (including
+`nodes/`), `readwrite` on each config subtree, `meta/`, `changesets/`, `history/` and `audit/`. It
+cannot write `nodes/`, so it cannot forge heartbeats (`ControlPlaneIT`).
 
 ## Value envelope
 

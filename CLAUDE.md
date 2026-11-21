@@ -20,8 +20,8 @@ if you change a command, module, or convention, update this file in the same com
 | `gateway-config/` | etcd HTTP/JSON client, config worker (`worker/`: sync, watch, LKG, heartbeat — ADR 0014), file source |
 | `gateway-observability/` | Metrics, tracing, and the SLF4J JSON log provider (ADR 0007) |
 | `gateway-app/` | `main`, wiring, Native Image metadata |
-| `control-plane/` | Admin API, validation, change sets, etcd writer, audit |
-| `test-support/` | Test-only helpers: throwaway PKI (`TestPki`), etcd Testcontainers cluster/node (`EtcdTestCluster`, `EtcdTestNode`) with TLS + auth + gateway role, fixed ports, kill/restart/pause; Redis node (`RedisTestNode`, ACL user, pause/resume). Never shipped |
+| `control-plane/` | Admin API (Vert.x, `api/`), OIDC auth + roles (`auth/`), change sets, dry-run validation and single-txn publish/rollback (`changes/`, ADR 0020), audit (`audit/`, ADR 0021), etcd store (`store/`), migrations |
+| `test-support/` | Test-only helpers: throwaway PKI (`TestPki`), etcd Testcontainers cluster/node (`EtcdTestCluster`, `EtcdTestNode`) with TLS + auth + gateway and control-plane roles, fixed ports, kill/restart/pause; Redis node (`RedisTestNode`, ACL user, pause/resume). Never shipped |
 | `admin-console/` | React + TypeScript frontend (pnpm; not a Gradle project) |
 | `integration-tests/`, `benchmarks/` | Testcontainers suites; JMH and load scenarios |
 | `deployment/` | Dockerfiles, Compose, Kustomize base and overlays |
@@ -37,11 +37,12 @@ GW_CONFIG_FILE=path/to/gateway.json ./gradlew :gateway-app:run   # gateway on th
 GW_ETCD_ENDPOINTS=https://localhost:2379 GW_ETCD_CA=... GW_ETCD_USER=gateway GW_ETCD_PASSWORD_FILE=... \
   GW_ETCD_PREFIX=/gw/dev/ GW_LKG_DIR=/tmp/gw-lkg ./gradlew :gateway-app:run   # etcd config (all env vars: docs/operations/configuration.md)
 # Redis (global rate limit, L2 cache): GW_REDIS_URL=redis://localhost:6379 GW_REDIS_USER=gateway GW_REDIS_PASSWORD_FILE=...
-./gradlew :control-plane:run         # Admin API on the JVM (dev)
+./gradlew :control-plane:run         # Admin API on the JVM (dev); CP_* env vars: docs/operations/control-plane.md
+./gradlew :control-plane:nativeCompile  # -> control-plane/build/native/nativeCompile/control-plane
 ./gradlew :integration-tests:integrationTest        # Testcontainers suites, gateway as JVM process (needs Docker)
 ./gradlew :integration-tests:nativeIntegrationTest  # same suites against the native binary (needs Docker)
 ./gradlew :gateway-app:nativeCompile # native binary -> gateway-app/build/native/nativeCompile/gateway
-./gradlew nativeTest                 # unit tests as native images (config-model, core, proxy, plugins, app)
+./gradlew nativeTest                 # unit tests as native images (config-model, gateway-config, core, proxy, plugins, app, control-plane)
 ./gradlew :benchmarks:jmh -Pjmh.args="RouterBenchmark -prof gc"   # JMH; results in benchmarks/build/results/jmh
 ./gradlew :gateway-app:installDist   # jvm-prod distribution -> gateway-app/build/install/gateway/
 gateway-app/build/native/nativeCompile/gateway check-etcd --help   # etcd connectivity/role check
@@ -95,6 +96,11 @@ For anything in the request path or config worker, also run the native build and
   plus `meta/schema-version`, `changesets/`, `history/`, and leased `nodes/{gatewayId}` heartbeats.
   The full reference is `docs/architecture/etcd-keys.md`; update it when keys change.
 - Values are JSON with `id`, `kind`, `schemaVersion`, `tenantId` (if scoped), `updatedAt`, `updatedBy`.
+- Control-plane keys: `changesets/{id}`, `history/head` (compared by every publish),
+  `history/entries/{seq}`, `audit/{micros}-{rand}`. The control-plane etcd role cannot write `nodes/`.
+- The control plane validates by running the gateway's own `EtcdSnapshotBuilder` + `SnapshotCompiler`
+  with `ValidationOnly` services: a plugin factory must not read gateway-local files or fetch
+  anything when `PluginContext.validationOnly()` is true.
 - Validate value size and transaction op count before writing; etcd rejects oversized requests.
 - Key-schema changes need a versioned migration in `control-plane` and a bump of `meta/schema-version`.
 - Secrets: hash credentials; envelope-encrypt anything that must be recoverable. Never store plaintext.

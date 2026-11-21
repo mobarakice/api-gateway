@@ -47,6 +47,7 @@ public final class OidcKeySources implements PluginServices.SnapshotAware {
     private final Context context;
     private final Duration timeout;
     private final Map<Spec, Source> sources = new ConcurrentHashMap<>();
+    private final boolean fetch;
 
     /**
      * What to fetch.
@@ -60,16 +61,31 @@ public final class OidcKeySources implements PluginServices.SnapshotAware {
     }
 
     public OidcKeySources(Vertx vertx, Duration timeout) {
+        this(vertx, timeout, true);
+    }
+
+    private OidcKeySources(Vertx vertx, Duration timeout, boolean fetch) {
         this.vertx = vertx;
         this.context = vertx.getOrCreateContext();
         this.timeout = timeout;
+        this.fetch = fetch;
+    }
+
+    /**
+     * For config validation only (the control plane's dry run): sources are created but never fetch,
+     * so validating a change never makes the validating process call an identity provider.
+     */
+    public static OidcKeySources validationOnly(Vertx vertx) {
+        return new OidcKeySources(vertx, Duration.ofSeconds(1), false);
     }
 
     /** The shared source for {@code spec}, starting its first fetch if new. Safe from any thread. */
     public Source source(Spec spec) {
         return sources.computeIfAbsent(spec, s -> {
             Source src = new Source(s);
-            context.runOnContext(v -> src.fetch());
+            if (fetch) {
+                context.runOnContext(v -> src.fetch());
+            }
             return src;
         });
     }

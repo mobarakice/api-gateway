@@ -3,6 +3,7 @@ package apigw.config.etcd;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -83,6 +84,24 @@ final class EtcdJson {
         }
         ObjectNode root = MAPPER.createObjectNode();
         root.set("create_request", create);
+        return root;
+    }
+
+    static ObjectNode txnRequest(Txn txn) {
+        ObjectNode root = MAPPER.createObjectNode();
+        ArrayNode compare = root.putArray("compare");
+        for (Txn.Compare c : txn.compares()) {
+            compare.addObject().put("key", b64(c.key())).put("target", "MOD").put("result", "EQUAL")
+                    .put("mod_revision", Long.toString(c.modRevision()));
+        }
+        ArrayNode success = root.putArray("success");
+        for (Txn.Op op : txn.success()) {
+            switch (op) {
+                case Txn.Put put -> success.addObject().set("request_put", putRequest(put.key(), put.value(), 0));
+                case Txn.Delete del -> success.addObject().set("request_delete_range",
+                        MAPPER.createObjectNode().put("key", b64(del.key())));
+            }
+        }
         return root;
     }
 

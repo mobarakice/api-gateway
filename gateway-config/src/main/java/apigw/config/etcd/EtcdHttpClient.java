@@ -170,6 +170,20 @@ public final class EtcdHttpClient implements AutoCloseable {
                         ? Future.succeededFuture(Boolean.FALSE) : Future.failedFuture(e));
     }
 
+    /** Runs {@code txn} (one etcd transaction: all writes or none). */
+    public Future<Txn.Result> txn(Txn txn) {
+        return call("/v3/kv/txn", EtcdJson.txnRequest(txn))
+                .map(n -> new Txn.Result(n.path("succeeded").asBoolean(false), EtcdJson.revision(n)));
+    }
+
+    /**
+     * Size of {@code txn} as sent (JSON, base64 values). etcd limits the protobuf request
+     * ({@code --max-request-bytes}, default 1.5 MiB), which is always smaller, so this is a safe bound.
+     */
+    public static int encodedSize(Txn txn) {
+        return EtcdJson.write(EtcdJson.txnRequest(txn)).length();
+    }
+
     /**
      * Opens a watch on every key under {@code prefix} starting at {@code startRevision}.
      * {@code onResponse} gets each message, including the creation ack and progress notifications.

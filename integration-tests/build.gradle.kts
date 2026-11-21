@@ -13,8 +13,14 @@ val gatewayRuntime = configurations.create("gatewayRuntime") {
     isCanBeResolved = true
 }
 
+val controlPlaneRuntime = configurations.create("controlPlaneRuntime") {
+    isCanBeConsumed = false
+    isCanBeResolved = true
+}
+
 dependencies {
     gatewayRuntime(project(":gateway-app"))
+    controlPlaneRuntime(project(":control-plane"))
 }
 
 testing {
@@ -42,14 +48,19 @@ testing {
 val integrationTestSourceSet = sourceSets.named("integrationTest")
 val javaLauncher = javaToolchains.launcherFor(java.toolchain)
 val nativeBinary = rootProject.layout.projectDirectory.file("gateway-app/build/native/nativeCompile/gateway")
+val cpNativeBinary = rootProject.layout.projectDirectory.file(
+    "control-plane/build/native/nativeCompile/control-plane")
 
 tasks.named<Test>("integrationTest") {
     description = "Runs the integration suites against the gateway as a JVM process."
     val cp: FileCollection = gatewayRuntime
+    val cpCp: FileCollection = controlPlaneRuntime
     val java = javaLauncher.map { it.executablePath.asFile.absolutePath }
     inputs.files(cp).withPropertyName("gatewayRuntime")
+    inputs.files(cpCp).withPropertyName("controlPlaneRuntime")
     jvmArgumentProviders.add(CommandLineArgumentProvider {
-        listOf("-Dgw.it.mode=jvm", "-Dgw.it.java=" + java.get(), "-Dgw.it.classpath=" + cp.asPath)
+        listOf("-Dgw.it.mode=jvm", "-Dgw.it.java=" + java.get(), "-Dgw.it.classpath=" + cp.asPath,
+            "-Dgw.it.cpClasspath=" + cpCp.asPath)
     })
 }
 
@@ -58,9 +69,10 @@ tasks.register<Test>("nativeIntegrationTest") {
     group = "verification"
     testClassesDirs = integrationTestSourceSet.get().output.classesDirs
     classpath = integrationTestSourceSet.get().runtimeClasspath
-    dependsOn(":gateway-app:nativeCompile")
+    dependsOn(":gateway-app:nativeCompile", ":control-plane:nativeCompile")
     val binary = nativeBinary.asFile.absolutePath
+    val cpBinary = cpNativeBinary.asFile.absolutePath
     jvmArgumentProviders.add(CommandLineArgumentProvider {
-        listOf("-Dgw.it.mode=native", "-Dgw.it.binary=$binary")
+        listOf("-Dgw.it.mode=native", "-Dgw.it.binary=$binary", "-Dgw.it.cpBinary=$cpBinary")
     })
 }

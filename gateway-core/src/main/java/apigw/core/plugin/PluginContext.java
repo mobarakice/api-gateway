@@ -38,6 +38,11 @@ public final class PluginContext {
         return services;
     }
 
+    /** True during a control-plane dry run: do not read gateway-local files (see {@link ValidationOnly}). */
+    public boolean validationOnly() {
+        return services.find(ValidationOnly.class).isPresent();
+    }
+
     public Clock clock() {
         return clock;
     }

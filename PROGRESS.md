@@ -10,7 +10,7 @@ Resume rule: read `CLAUDE.md` and this file, then continue from the last green m
 | M3 | Config worker against etcd | done (2026-11-21) |
 | M4 | Security plugins: JWT, OIDC/JWKS, API keys, RBAC/ABAC, tenant isolation, SSRF | done (2026-11-21) |
 | M5 | Traffic plugins: rate limit, cache, breaker, retries, health, transforms, CORS, IP rules | done (2026-11-21) |
-| M6 | Control plane | not started |
+| M6 | Control plane | done (2026-11-21) |
 | M7 | Admin console | not started |
 | M8 | Observability | not started |
 | M9 | Docker, Kubernetes, hardening | not started |
@@ -377,6 +377,80 @@ Not in M5 (planned later):
 - Background (detached) stale-while-revalidate: we revalidate in-band instead (ADR 0019).
 - Breaker, rate-limit and cache metrics: M8; today they are logs only. Console forms for the new
   schemas: M7. Purge API writing `policies/cache-purge/*`: M6.
+
+## M6 results (2026-11-21, dev host: macOS arm64, Oracle GraalVM 25.0.4, etcd v3.7.3)
+
+Built:
+- `control-plane`: a Vert.x Admin API (`/admin/v1`; ADR 0020), with no Spring and no new
+  dependencies.
+  - CRUD for routes, services, upstreams, consumers, credentials, plugin-configs, global-plugins,
+    `policies/{type}` and certificates (references only), plus settings.
+  - Plugin catalog and schemas; change sets (create, stage, unstage, discard, validate, diff,
+    publish); history and rollback; `GET /gateways` with `behind`; `GET /audit`; health and ready.
+  - ETag / If-Match, 428 when it is missing, cursor pagination, and RFC 9457 errors with field
+    paths.
+- Publish: one etcd transaction with `mod_revision` compares on every touched key plus
+  `history/head`; re-validated on retry; op and byte limits enforced. The dry run reuses the
+  gateway's snapshot builder and compiler.
+- Auth: OIDC bearer tokens through the gateway's JWT verifier, using pinned asymmetric algorithms;
+  roles viewer < editor < publisher < admin.
+- API keys are generated server side and shown once; only the hash is stored, and hashes are
+  removed from every read.
+- Audit (ADR 0021): successful mutations are written to etcd in the same txn, the log and an
+  optional JSON Lines sink. Refused attempts go to the log and sink only.
+- Schema migration v1 for `meta/schema-version`. A new etcd role `control-plane` can write the config
+  subtrees, `changesets/`, `history/` and `audit/`, but not `nodes/`.
+- Shared changes:
+  - `EtcdHttpClient.txn` plus `Txn`.
+  - A `ValidationOnly` plugin service: a JWT `secretFile` is checked for shape only.
+  - `OidcKeySources.validationOnly`.
+  - `JsonLogging.event`.
+- Docs: OpenAPI 3.1 `docs/api/admin-v1.yaml` (Redocly lint: valid, 52 warnings, all missing
+  `operationId`s), `docs/operations/control-plane.md`, and `etcd-keys.md` updated.
+
+Checks:
+- `./gradlew build` (with the OSV scan): green.
+- Control-plane unit tests: 22 (PublisherTest, AdminApiTest, AuditLogTest, AdminAuthTest).
+- `./gradlew nativeTest`: green in all 7 modules (config-model 21, gateway-config 20, core 17,
+  proxy 33, plugins 32, app 31, control-plane 22).
+- `ControlPlaneIT` (3-member etcd with TLS and auth, the control plane over HTTPS, 3 gateway
+  processes), JVM and native: 7/7 each. It covers:
+  - Exit 1: publish to live on all 3 gateways, measured from sending the publish to the last
+    gateway serving the route, 5 samples. Native 115–193 ms; JVM 135–154 ms. Target ≤ 2 s.
+    `GET /gateways` shows 3 nodes, none behind.
+  - Exit 2: concurrent edits give 412 with the conflicting key; staging against a stale ETag gives
+    412.
+  - Exit 3: rollback restores v1 on all 3 gateways (about 100 ms), and `rollbackOf` is recorded.
+  - An API key issued through the API works on all gateways through key-auth plus rate-limit plus
+    cache. The secret is not in etcd, the control-plane output, the audit sink or any API response.
+  - Privilege escalation is refused: viewer write, editor publish/rollback, publisher
+    settings/audit, wrong audience, `alg: none` and no token. Denials are audited with the subject.
+  - etcd least privilege: the control plane cannot write `nodes/`; gateways cannot write config,
+    `changesets/` or `audit/`.
+  - Gateways keep serving while the control plane is down; after a restart, publishing works.
+- Full integration suites: JVM 35/35, native 35/35.
+- Native control-plane binary: 48.4 MB.
+
+Fixed along the way:
+- The plugin schemas were not in the native image (resource metadata added).
+- `System.exit` was called on an event loop and deadlocked against the shutdown hook (now exits on a
+  fresh thread).
+- `TrafficPipelineTest` purge race: an entry stored in the purge's own millisecond counts as purged,
+  and the native run was fast enough to hit that.
+
+Not in M6 (planned later):
+- Tenant-scoped admins: roles are global today, so tenant admins wait for the console's needs (M7).
+- Revoked-token keys with etcd leases: not done; the gateway ignores expired entries, and they are
+  removed through the API.
+- Envelope encryption: nothing recoverable is stored yet. Required before any recoverable secret
+  field ships.
+- External HTTP audit sink: the file sink and logs feed the pipeline.
+- Watch relay for large fleets (risk R5).
+- Admin API metrics: M8.
+- Certificate material loading and TLS hot reload on gateways: M9.
+- Interop against a real IdP: still a local JWKS file in tests.
+- Propagation was measured on the dev host with a local etcd cluster in Docker, not on the reference
+  topology.
 
 ## Known blockers
 

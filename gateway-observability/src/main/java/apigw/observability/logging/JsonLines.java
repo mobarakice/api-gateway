@@ -34,6 +34,16 @@ final class JsonLines {
         return b.append("}\n").toString();
     }
 
+    /** An INFO line carrying a pre-rendered JSON object under {@code field} (audit events). */
+    static String renderEvent(long epochMillis, String logger, String thread, String message, String field,
+            String jsonObject) {
+        String line = render(epochMillis, Level.INFO, logger, thread, message, null);
+        StringBuilder b = new StringBuilder(line.length() + field.length() + jsonObject.length() + 4);
+        b.append(line, 0, line.length() - 2).append(',');
+        string(b, field);
+        return b.append(':').append(jsonObject).append("}\n").toString();
+    }
+
     /** Appends {@code s} as a JSON string literal (RFC 8259 escaping). */
     static void string(StringBuilder b, String s) {
         b.append('"');

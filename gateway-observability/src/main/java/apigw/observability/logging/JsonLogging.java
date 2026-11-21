@@ -19,4 +19,20 @@ public final class JsonLogging {
         }
         return LogSink.instance().awaitDrained(timeout.toMillis());
     }
+
+    /**
+     * Logs a structured event: an INFO line from {@code logger} with message {@code message} and the
+     * JSON object {@code jsonObject} (already serialised, one line, no secrets) under {@code field}.
+     * Falls back to a plain SLF4J INFO line when another provider is bound.
+     */
+    public static void event(String logger, String message, String field, String jsonObject) {
+        if (!(LoggerFactory.getILoggerFactory() instanceof JsonLoggerFactory)) {
+            LoggerFactory.getLogger(logger).info("{} {}={}", message, field, jsonObject);
+            return;
+        }
+        if (org.slf4j.event.Level.INFO.toInt() >= LogLevels.threshold(logger)) {
+            LogSink.instance().offer(JsonLines.renderEvent(System.currentTimeMillis(), logger,
+                    Thread.currentThread().getName(), message, field, jsonObject));
+        }
+    }
 }

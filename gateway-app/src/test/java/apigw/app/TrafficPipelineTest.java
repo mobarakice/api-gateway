@@ -405,14 +405,19 @@ class TrafficPipelineTest {
         get("/c/plain");
         assertThat(get("/c/tagged").headers().firstValue("x-cache")).hasValue("HIT");
         String now = Instant.now().toString();
+        // An entry stored in the purge's own millisecond counts as purged (conservative), so the re-store
+        // below must land in a later millisecond; a native run can otherwise get there within 1 ms.
+        Thread.sleep(2);
         publish(config(",\"cachePurges\":[{\"id\":\"p1\",\"tag\":\"t2\",\"issuedAt\":\"" + now + "\"}]"));
         try {
             assertThat(get("/c/tagged").headers().firstValue("x-cache")).hasValue("MISS");
             assertThat(get("/c/plain").headers().firstValue("x-cache")).hasValue("HIT");
             assertThat(get("/c/tagged").headers().firstValue("x-cache")).hasValue("HIT");
             Thread.sleep(5);
+            String later = Instant.now().toString();
+            Thread.sleep(2);
             publish(config(",\"cachePurges\":[{\"id\":\"p2\",\"routeId\":\"cache\",\"issuedAt\":\""
-                    + Instant.now() + "\"}]"));
+                    + later + "\"}]"));
             assertThat(get("/c/plain").headers().firstValue("x-cache")).hasValue("MISS");
         } finally {
             publish(config(""));
