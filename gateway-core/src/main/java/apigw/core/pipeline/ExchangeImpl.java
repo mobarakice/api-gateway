@@ -43,6 +43,10 @@ final class ExchangeImpl implements ProxyExchange {
     private Principal principal;
     /** The consumer's plugin overrides by ordinal, or null. */
     private Plugin[] overrides;
+    private apigw.core.plugin.ResponseTap tap;
+    private long bodyLimit = -1;
+    /** Headers plugins asked to add to the response; null until the first one. */
+    private MultiMap extraResponseHeaders;
 
     ExchangeImpl(HttpServerRequest request, Snapshot snapshot, CompiledRoute route, int[] params,
             Forwarder forwarder, String requestId, String host, long startNanos) {
@@ -215,6 +219,69 @@ final class ExchangeImpl implements ProxyExchange {
     }
 
     @Override
+    public Outcome respond(int code, String title, MultiMap headers) {
+        if (!finished && !responded && !request.response().headWritten()) {
+            request.response().headers().addAll(headers);
+        }
+        return respond(code, title);
+    }
+
+    @Override
+    public Outcome respondWith(int code, MultiMap headers, io.vertx.core.buffer.Buffer body) {
+        if (!beginResponse(code, headers)) {
+            return Outcome.STOP;
+        }
+        HttpServerResponse response = request.response();
+        if (!request.isEnded() && request.version() != HttpVersion.HTTP_2) {
+            closeAfterResponse = true;
+            headers.set("connection", "close");
+        }
+        response.setStatusCode(code);
+        response.headers().addAll(headers);
+        boolean bodyless = request.method() == io.vertx.core.http.HttpMethod.HEAD || code == 204 || code == 304;
+        if (body == null || body.length() == 0 || bodyless) {
+            if (!bodyless && !headers.contains("content-length")) {
+                response.putHeader("content-length", "0");
+            }
+            response.end();
+        } else {
+            response.putHeader("content-length", Integer.toString(body.length()));
+            response.end(body);
+        }
+        return Outcome.STOP;
+    }
+
+    @Override
+    public void addResponseHeader(CharSequence name, CharSequence value) {
+        if (extraResponseHeaders == null) {
+            extraResponseHeaders = MultiMap.caseInsensitiveMultiMap();
+        }
+        extraResponseHeaders.add(name, value);
+    }
+
+    @Override
+    public void limitRequestBody(long maxBytes) {
+        long global = snapshot.settings().maxRequestBodyBytes();
+        long current = bodyLimit < 0 ? global : bodyLimit;
+        bodyLimit = Math.min(current, Math.max(0, maxBytes));
+    }
+
+    @Override
+    public long requestBodyLimit() {
+        return bodyLimit < 0 ? snapshot.settings().maxRequestBodyBytes() : bodyLimit;
+    }
+
+    @Override
+    public void tapResponse(apigw.core.plugin.ResponseTap t) {
+        this.tap = t;
+    }
+
+    @Override
+    public apigw.core.plugin.ResponseTap responseTap() {
+        return tap;
+    }
+
+    @Override
     public void resume() {
         if (!responded && !finished) {
             run();
@@ -292,6 +359,13 @@ final class ExchangeImpl implements ProxyExchange {
             closeAfterResponse = true;
             response.putHeader("connection", "close");
         }
+        if (extraResponseHeaders != null) {
+            response.headers().addAll(extraResponseHeaders);
+        }
+        if (route.headerFilter().length > 0) {
+            // Gateway errors pass the header filters too, e.g. so a browser can read a CORS 401 or 429.
+            runHeaderFilters(code, response.headers());
+        }
         Problems.send(response, code, title, requestId);
         return Outcome.STOP;
     }
@@ -303,6 +377,16 @@ final class ExchangeImpl implements ProxyExchange {
         }
         responded = true;
         status = code;
+        if (extraResponseHeaders != null) {
+            headers.addAll(extraResponseHeaders);
+        }
+        runHeaderFilters(code, headers);
+        headers.set(Problems.REQUEST_ID, requestId);
+        Headers.appendVia(headers, snapshot.settings().via(HttpVersion.HTTP_1_1));
+        return true;
+    }
+
+    private void runHeaderFilters(int code, MultiMap headers) {
         ResponseHeadersPlugin[] filters = route.headerFilter();
         int[] slots = route.headerFilterSlots();
         Plugin[] o = overrides;
@@ -316,9 +400,6 @@ final class ExchangeImpl implements ProxyExchange {
             }
             invoke(f, code, headers);
         }
-        headers.set(Problems.REQUEST_ID, requestId);
-        Headers.appendVia(headers, snapshot.settings().via(HttpVersion.HTTP_1_1));
-        return true;
     }
 
     @Override

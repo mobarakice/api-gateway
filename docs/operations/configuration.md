@@ -21,6 +21,13 @@
 | `GW_CONFIG_FILE` | – | Whole-config JSON file (dev/tests). Mutually exclusive with `GW_ETCD_ENDPOINTS` |
 | `GW_CONFIG_POLL_MS` | `1000` | File change poll interval (50–600000) |
 | `GW_LOG_LEVEL` | `INFO` | Root log level |
+| `GW_REDIS_URL` | – | `redis://host:port/db` or `rediss://` (TLS). Enables global rate limits and the L2 cache. Credentials in the URL are refused |
+| `GW_REDIS_USER`, `GW_REDIS_PASSWORD_FILE` | – | Redis ACL user; the password is read from the file and never logged |
+| `GW_REDIS_CA` | – | PEM CA bundle for `rediss://` (default: JDK trust store) |
+| `GW_REDIS_TIMEOUT_MS` | `50` | Default per-command timeout (plugins set their own budget) |
+| `GW_REDIS_CONNECT_TIMEOUT_MS` | `2000` | Connect timeout; reconnects back off 100 ms–5 s with jitter |
+| `GW_CACHE_MAX_BYTES` | `67108864` | Size of the process-wide L1 response cache (ADR 0019) |
+| `GW_RATELIMIT_MAX_KEYS` | `200000` | Local rate-limit keys kept per process (ADR 0018) |
 
 Without a valid configuration the gateway answers 503 and `/readyz` reports why.
 
@@ -73,6 +80,22 @@ Decoded by `apigw.model.ConfigDecoder`, validated by `ConfigValidator`, compiled
   bounds the whole exchange (0 = none, for long streams).
 - Pools are per target and per event loop. `maxPending` requests may wait for a connection; beyond that
   the request fails fast with 503.
+- Resilience (ADR 0017), all opt-in:
+  - `retries` on a route or service (route wins): `{"attempts": 1, "on": ["connect-failure","reset",
+    "timeout"], "backoffMs": 25, "maxBackoffMs": 250, "budgetPercent": 20, "minRetriesPerSecond": 3,
+    "methods": ["GET","HEAD","OPTIONS","PUT","DELETE","TRACE"]}`. `on` may add `502`, `503`, `504`.
+    Requests with a body are retried only after a connect failure (body not yet read).
+  - `upstreams[].healthCheck.active`: `{"path": "/healthz", "host": null, "intervalMs": 5000,
+    "timeoutMs": 1000, "healthyThreshold": 2, "unhealthyThreshold": 3, "statuses": [200..299]}`.
+  - `upstreams[].healthCheck.passive`: `{"consecutiveFailures": 5, "ejectionMs": 30000,
+    "maxEjectionPercent": 50}`.
+  - `upstreams[].circuitBreaker`: `{"windowSeconds": 10, "minCalls": 20, "failureRatePercent": 50,
+    "slowCallMs": 0, "slowCallRatePercent": 100, "openMs": 30000, "halfOpenCalls": 3,
+    "failureStatuses": [502, 503, 504]}`. Open → 503.
+  - `upstreams[].clientCert`: `{"certFile", "keyFile"}` PEM, `scheme: https` only (mTLS to targets).
+  - With no target available the upstream balances over all targets (panic mode, warn log).
+- `cachePurges`: `[{"id", "routeId" | "tag", "issuedAt"}]` (etcd: `policies/cache-purge/{id}`); cached
+  entries stored before `issuedAt` for that route or tag are treated as misses (ADR 0019). ≤ 10,000.
 
 ## Errors seen by clients
 Generic RFC 9457 bodies with the request ID, never upstream addresses or config details:

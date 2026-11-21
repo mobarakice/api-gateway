@@ -21,7 +21,8 @@ public record GatewayConfig(
         List<Credential> credentials,
         List<AuthzPolicy> authzPolicies,
         List<PluginConfigSet> pluginConfigs,
-        List<RevokedToken> revokedTokens) {
+        List<RevokedToken> revokedTokens,
+        List<CachePurge> cachePurges) {
 
     /** Highest schema version this build understands. */
     public static final int SUPPORTED_SCHEMA_VERSION = 1;
@@ -36,6 +37,16 @@ public record GatewayConfig(
         authzPolicies = List.copyOf(authzPolicies);
         pluginConfigs = List.copyOf(pluginConfigs);
         revokedTokens = List.copyOf(revokedTokens);
+        cachePurges = List.copyOf(cachePurges);
+    }
+
+    /** Without cache purges. */
+    public GatewayConfig(int schemaVersion, long revision, Settings settings, List<Route> routes,
+            List<Service> services, List<Upstream> upstreams, List<PluginRef> globalPlugins, List<Consumer> consumers,
+            List<Credential> credentials, List<AuthzPolicy> authzPolicies, List<PluginConfigSet> pluginConfigs,
+            List<RevokedToken> revokedTokens) {
+        this(schemaVersion, revision, settings, routes, services, upstreams, globalPlugins, consumers, credentials,
+                authzPolicies, pluginConfigs, revokedTokens, List.of());
     }
 
     /** Routing objects only (no security objects); convenient for tests and simple file configs. */

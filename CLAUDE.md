@@ -15,13 +15,13 @@ if you change a command, module, or convention, update this file in the same com
 | `gradle/libs.versions.toml` | Every dependency and plugin version. Never hardcode versions in module build files |
 | `config-model/` | Config DTOs and JSON Schemas shared by gateway and control plane |
 | `gateway-core/` | Request pipeline, routing trie, immutable snapshot model, plugin SPI and registry |
-| `gateway-plugins/` | Built-in plugins: `jwt` (+ OIDC key sets), `key-auth`, `authz`, `headers`; rate limit, cache, CORS, IP rules from M5. Test fixtures (`TestJwt`, JDK-signed tokens) in `src/testFixtures` |
-| `gateway-proxy/` | Upstream pools, load balancing, SSRF connect-time resolver (`TargetResolver`), circuit breaker, retries, streaming proxy |
+| `gateway-plugins/` | Built-in plugins: `jwt` (+ OIDC key sets), `key-auth`, `authz`, `headers`, `cors`, `ip-restriction`, `request-size-limit`, `request-transform`, `rate-limit` (ADR 0018), `cache` (ADR 0019); minimal RESP2 Redis client (`redis/`). Test fixtures (`TestJwt`, JDK-signed tokens) in `src/testFixtures` |
+| `gateway-proxy/` | Upstream pools, load balancing, SSRF connect-time resolver (`TargetResolver`), circuit breaker, passive ejection + active health checks, retries with budget (ADR 0017), response tap, streaming proxy |
 | `gateway-config/` | etcd HTTP/JSON client, config worker (`worker/`: sync, watch, LKG, heartbeat — ADR 0014), file source |
 | `gateway-observability/` | Metrics, tracing, and the SLF4J JSON log provider (ADR 0007) |
 | `gateway-app/` | `main`, wiring, Native Image metadata |
 | `control-plane/` | Admin API, validation, change sets, etcd writer, audit |
-| `test-support/` | Test-only helpers: throwaway PKI (`TestPki`), etcd Testcontainers cluster/node (`EtcdTestCluster`, `EtcdTestNode`) with TLS + auth + gateway role, fixed ports, kill/restart/pause. Never shipped |
+| `test-support/` | Test-only helpers: throwaway PKI (`TestPki`), etcd Testcontainers cluster/node (`EtcdTestCluster`, `EtcdTestNode`) with TLS + auth + gateway role, fixed ports, kill/restart/pause; Redis node (`RedisTestNode`, ACL user, pause/resume). Never shipped |
 | `admin-console/` | React + TypeScript frontend (pnpm; not a Gradle project) |
 | `integration-tests/`, `benchmarks/` | Testcontainers suites; JMH and load scenarios |
 | `deployment/` | Dockerfiles, Compose, Kustomize base and overlays |
@@ -36,6 +36,7 @@ if you change a command, module, or convention, update this file in the same com
 GW_CONFIG_FILE=path/to/gateway.json ./gradlew :gateway-app:run   # gateway on the JVM (dev), file config
 GW_ETCD_ENDPOINTS=https://localhost:2379 GW_ETCD_CA=... GW_ETCD_USER=gateway GW_ETCD_PASSWORD_FILE=... \
   GW_ETCD_PREFIX=/gw/dev/ GW_LKG_DIR=/tmp/gw-lkg ./gradlew :gateway-app:run   # etcd config (all env vars: docs/operations/configuration.md)
+# Redis (global rate limit, L2 cache): GW_REDIS_URL=redis://localhost:6379 GW_REDIS_USER=gateway GW_REDIS_PASSWORD_FILE=...
 ./gradlew :control-plane:run         # Admin API on the JVM (dev)
 ./gradlew :integration-tests:integrationTest        # Testcontainers suites, gateway as JVM process (needs Docker)
 ./gradlew :integration-tests:nativeIntegrationTest  # same suites against the native binary (needs Docker)
@@ -126,6 +127,9 @@ For anything in the request path or config worker, also run the native build and
   are excluded build-wide; `netty-codec-classes-quic` must stay (Vert.x `remoteAddress()` needs it) and
   its package plus Netty `SslContext` initialise at run time (ADR 0003 amendment).
 - Modules whose code runs in the request path apply `gw.native-conventions` so `nativeTest` covers them.
+- Caffeine: reachability-repo metadata is vendored, plus a reviewed file in
+  `gateway-plugins/.../META-INF/native-image/apigw/gateway-plugins/` for the generated cache classes we use
+  (SSMS/SSMW/PSMS/PSMW). A new Caffeine builder option (expiry, refresh, stats) needs its classes added there.
 - The GraalVM reachability metadata repository is off by default (`-Pgw.metadataRepository=true`).
 - The tracing agent is for discovery only. Review and trim what it generates before committing.
 - A feature is not done until it works in the native binary, not just on the JVM.

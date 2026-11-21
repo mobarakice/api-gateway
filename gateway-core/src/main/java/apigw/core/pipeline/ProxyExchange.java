@@ -22,4 +22,10 @@ public interface ProxyExchange extends Exchange {
 
     /** True once a response was fully sent, failed, or the client went away. */
     boolean finished();
+
+    /** The request body cap for this exchange (global setting, or lower if a plugin limited it). */
+    long requestBodyLimit();
+
+    /** The tap a plugin registered, or null. */
+    apigw.core.plugin.ResponseTap responseTap();
 }

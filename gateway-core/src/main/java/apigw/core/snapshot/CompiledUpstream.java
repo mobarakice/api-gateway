@@ -18,6 +18,9 @@ public record CompiledUpstream(
         String hashHeader,
         Upstream.Pool pool,
         boolean http2,
+        Upstream.HealthCheck healthCheck,
+        Upstream.CircuitBreaker circuitBreaker,
+        Upstream.ClientCert clientCert,
         String definitionKey) {
 
     /**
@@ -45,6 +48,11 @@ public record CompiledUpstream(
 
     public CompiledUpstream {
         targets = List.copyOf(targets);
+    }
+
+    /** True when targets can become unavailable (health checks or outlier ejection configured). */
+    public boolean gated() {
+        return healthCheck.active() != null || healthCheck.passive() != null;
     }
 
     /** True when the consistent hash key is the client IP. */

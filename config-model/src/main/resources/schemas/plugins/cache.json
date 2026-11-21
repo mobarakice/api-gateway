@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://apigw.local/schemas/plugins/cache.json",
+  "title": "cache plugin",
+  "description": "Caches GET responses (HEAD served from them) in a process-wide L1, optionally Redis L2. Coalesces concurrent misses. Never stores Set-Cookie, no-store/no-cache, or private/authenticated responses unless cacheAuthenticated (the key then includes the principal).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "ttlSeconds": { "type": "integer", "minimum": 0, "maximum": 31536000, "default": 0, "description": "freshness when the response gives none; 0 = only explicitly cacheable responses" },
+    "maxTtlSeconds": { "type": "integer", "minimum": 1, "maximum": 31536000, "default": 3600 },
+    "staleWhileRevalidateSeconds": { "type": "integer", "minimum": 0, "maximum": 86400, "default": 0 },
+    "statuses": {
+      "type": "array", "minItems": 1, "uniqueItems": true, "default": [200],
+      "items": { "enum": [200, 203, 204, 300, 301, 308, 404, 405, 410, 414, 501] }
+    },
+    "vary": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,256}$" } },
+    "query": {
+      "oneOf": [
+        { "enum": ["all", "ignore"] },
+        { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 256 } }
+      ],
+      "default": "all"
+    },
+    "maxBodyBytes": { "type": "integer", "minimum": 0, "maximum": 67108864, "default": 1048576 },
+    "cacheAuthenticated": { "type": "boolean", "default": false },
+    "tagHeader": { "type": "string", "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,256}$", "default": "cache-tag" },
+    "l2": { "type": "boolean", "default": false },
+    "l2TimeoutMs": { "type": "integer", "minimum": 1, "maximum": 5000, "default": 20 },
+    "lockTimeoutMs": { "type": "integer", "minimum": 10, "maximum": 60000, "default": 5000 },
+    "statusHeader": { "type": "boolean", "default": true }
+  }
+}

@@ -53,4 +53,30 @@ public interface Exchange {
 
     /** {@link #respond(int, String)} with one extra response header, e.g. {@code WWW-Authenticate}. */
     Outcome respond(int status, String title, String headerName, String headerValue);
+
+    /** {@link #respond(int, String)} with extra response headers, e.g. {@code Retry-After} and {@code RateLimit}. */
+    Outcome respond(int status, String title, MultiMap headers);
+
+    /**
+     * Sends a complete response made by a plugin (cache hit, CORS preflight). Header filters run on
+     * {@code headers} first, as for an upstream response. Returns {@link Outcome#STOP}.
+     *
+     * @param body null or empty for no body
+     */
+    Outcome respondWith(int status, MultiMap headers, io.vertx.core.buffer.Buffer body);
+
+    /**
+     * Adds a header to whatever response this exchange sends (upstream, plugin-made or error), e.g.
+     * rate-limit state. Applied before header filters run.
+     */
+    void addResponseHeader(CharSequence name, CharSequence value);
+
+    /**
+     * Lowers the request body cap for this exchange (never raises it above the global
+     * {@code settings.maxRequestBodyBytes}). Bodies over the cap get 413, also when streamed chunked.
+     */
+    void limitRequestBody(long maxBytes);
+
+    /** Observes the upstream response, if one is proxied. One tap per exchange; a second call replaces it. */
+    void tapResponse(ResponseTap tap);
 }

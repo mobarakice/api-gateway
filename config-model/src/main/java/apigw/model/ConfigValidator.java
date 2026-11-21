@@ -26,6 +26,7 @@ public final class ConfigValidator {
     private static final Pattern KEY_ID = Pattern.compile("[A-Za-z0-9_-]{8,64}");
     /** Revocation entries are compiled into every snapshot; keep the set bounded (ADR 0015). */
     public static final int MAX_REVOKED_TOKENS = 100_000;
+    public static final int MAX_CACHE_PURGES = 10_000;
 
     private final List<ConfigError> errors = new ArrayList<>();
 
@@ -77,6 +78,7 @@ public final class ConfigValidator {
                 err(p + ".upstreamId", "references unknown upstream '" + s.upstreamId() + "'");
             }
             timeouts(s.timeouts(), p + ".timeouts");
+            retries(s.retries(), p + ".retries");
             plugins(s.plugins(), p + ".plugins");
             tenantId(s.tenantId(), p + ".tenantId");
             crossTenant(s.tenantId(), upstreamTenant.get(s.upstreamId()), p + ".upstreamId", "upstream");
@@ -86,6 +88,7 @@ public final class ConfigValidator {
             Route r = c.routes().get(i);
             String p = "routes[" + i + "]";
             route(r, p, serviceIds);
+            retries(r.retries(), p + ".retries");
             tenantId(r.tenantId(), p + ".tenantId");
             crossTenant(r.tenantId(), serviceTenant.get(r.serviceId()), p + ".serviceId", "service");
             String sig = signature(r);
@@ -207,6 +210,18 @@ public final class ConfigValidator {
             RevokedToken t = c.revokedTokens().get(i);
             if (t.jti() == null || t.jti().isEmpty() || t.jti().length() > 512) {
                 err("revokedTokens[" + i + "].jti", "must be 1..512 characters");
+            }
+        }
+        if (c.cachePurges().size() > MAX_CACHE_PURGES) {
+            err("cachePurges", "more than " + MAX_CACHE_PURGES + " entries; the control plane expires old purges");
+        }
+        for (int i = 0; i < c.cachePurges().size(); i++) {
+            CachePurge cp = c.cachePurges().get(i);
+            if (cp.tag() != null && (cp.tag().length() > 256 || cp.tag().isBlank())) {
+                err("cachePurges[" + i + "].tag", "must be 1..256 characters");
+            }
+            if (cp.issuedAt() == null) {
+                err("cachePurges[" + i + "].issuedAt", "required");
             }
         }
     }
@@ -350,7 +365,84 @@ public final class ConfigValidator {
         }
     }
 
+    private void range(int v, int min, int max, String p) {
+        if (v < min || v > max) {
+            err(p, "must be between " + min + " and " + max);
+        }
+    }
+
+    private void statuses(List<Integer> statuses, String p) {
+        for (int i = 0; i < statuses.size(); i++) {
+            range(statuses.get(i), 100, 599, p + "[" + i + "]");
+        }
+    }
+
+    private void retries(Retries r, String p) {
+        if (r == null) {
+            return;
+        }
+        range(r.attempts(), 0, 5, p + ".attempts");
+        range(r.backoffMs(), 0, 10_000, p + ".backoffMs");
+        range(r.maxBackoffMs(), r.backoffMs(), 60_000, p + ".maxBackoffMs");
+        range(r.budgetPercent(), 0, 100, p + ".budgetPercent");
+        range(r.minRetriesPerSecond(), 0, 1_000, p + ".minRetriesPerSecond");
+        for (int i = 0; i < r.methods().size(); i++) {
+            if (!METHODS.contains(r.methods().get(i))) {
+                err(p + ".methods[" + i + "]", "unknown method '" + r.methods().get(i) + "'");
+            }
+        }
+        if (r.attempts() > 0 && r.on().isEmpty()) {
+            err(p + ".on", "name at least one retry condition");
+        }
+    }
+
+    private void resilience(Upstream u, String p) {
+        Upstream.Active a = u.healthCheck().active();
+        if (a != null) {
+            String ap = p + ".healthCheck.active";
+            if (a.path() == null || !a.path().startsWith("/")
+                    || a.path().chars().anyMatch(ch -> ch < 0x21 || ch > 0x7e)) {
+                err(ap + ".path", "must be an absolute path of visible ASCII");
+            }
+            if (!a.host().isEmpty() && !TOKEN.matcher(a.host().replace(":", "").replace("[", "").replace("]", ""))
+                    .matches()) {
+                err(ap + ".host", "not a valid host");
+            }
+            range(a.intervalMs(), 500, 300_000, ap + ".intervalMs");
+            range(a.timeoutMs(), 50, 60_000, ap + ".timeoutMs");
+            if (a.timeoutMs() >= a.intervalMs()) {
+                err(ap + ".timeoutMs", "must be shorter than intervalMs");
+            }
+            range(a.healthyThreshold(), 1, 20, ap + ".healthyThreshold");
+            range(a.unhealthyThreshold(), 1, 20, ap + ".unhealthyThreshold");
+            statuses(a.statuses(), ap + ".statuses");
+        }
+        Upstream.Passive ps = u.healthCheck().passive();
+        if (ps != null) {
+            String pp = p + ".healthCheck.passive";
+            range(ps.consecutiveFailures(), 1, 1_000, pp + ".consecutiveFailures");
+            range(ps.ejectionMs(), 100, 3_600_000, pp + ".ejectionMs");
+            range(ps.maxEjectionPercent(), 1, 100, pp + ".maxEjectionPercent");
+        }
+        Upstream.CircuitBreaker b = u.circuitBreaker();
+        if (b != null) {
+            String bp = p + ".circuitBreaker";
+            range(b.windowSeconds(), 1, 600, bp + ".windowSeconds");
+            range(b.minCalls(), 1, 100_000, bp + ".minCalls");
+            range(b.failureRatePercent(), 1, 100, bp + ".failureRatePercent");
+            range(b.slowCallMs(), 0, MAX_TIMEOUT_MS, bp + ".slowCallMs");
+            range(b.slowCallRatePercent(), 1, 100, bp + ".slowCallRatePercent");
+            range(b.openMs(), 100, 3_600_000, bp + ".openMs");
+            range(b.halfOpenCalls(), 1, 100, bp + ".halfOpenCalls");
+            statuses(b.failureStatuses(), bp + ".failureStatuses");
+        }
+        if (u.clientCert() != null && u.scheme() != Upstream.Scheme.HTTPS) {
+            err(p + ".clientCert", "only used with scheme https");
+        }
+    }
+
     private void upstream(Upstream u, String p, List<Cidr> allow) {
+        resilience(u, p);
         if (u.targets().isEmpty()) {
             err(p + ".targets", "at least one target is required");
         }

@@ -9,7 +9,7 @@ Resume rule: read `CLAUDE.md` and this file, then continue from the last green m
 | M2 | Snapshot model, route trie, plugin SPI/registry, upstreams, LB, streaming proxy | done (2026-11-19) |
 | M3 | Config worker against etcd | done (2026-11-21) |
 | M4 | Security plugins: JWT, OIDC/JWKS, API keys, RBAC/ABAC, tenant isolation, SSRF | done (2026-11-21) |
-| M5 | Traffic plugins | not started |
+| M5 | Traffic plugins: rate limit, cache, breaker, retries, health, transforms, CORS, IP rules | done (2026-11-21) |
 | M6 | Control plane | not started |
 | M7 | Admin console | not started |
 | M8 | Observability | not started |
@@ -115,7 +115,7 @@ Dev-host measurements from the integration tests. These are not reference-host r
 | RSS after protocol probes | 177 MB | 42 MB |
 
 Not in M2 (planned later, per spec order):
-- Active and passive health checks, retries with budget, and circuit breaker (M5).
+- Active and passive health checks, retries with budget, and circuit breaker (done in M5).
 - SSRF connect-time checks (M4).
 - gRPC trailers and `TE: trailers` passthrough (M5).
 - WebSocket upgrade proxying (M5).
@@ -296,7 +296,7 @@ Notes:
   asserts no ERROR lines). Not verified whether this predates M4.
 
 Not in M4 (planned later):
-- HMAC request signing with a replay window (spec §9, "optional"): M5. It needs a replay cache;
+- HMAC request signing with a replay window (spec §9, "optional"): deferred again in M5. It needs a replay cache;
   Redis is optional, with a local per-gateway fallback.
 - Writing `policies/revoked-tokens/*` with etcd leases (TTL = `expiresAt`) so etcd expires them: M6,
   in the control-plane writer. The gateway already ignores entries past `expiresAt`.
@@ -304,6 +304,79 @@ Not in M4 (planned later):
 - Certificates (`certificates/`), TLS hot reload, mTLS to upstreams: M5.
 - Admin API privilege escalation tests: M6. Console plugin forms for the new schemas: M7.
 - Auth metrics (rejections by reason, JWKS refresh state): M8. Today they are in debug/warn logs.
+
+## M5 results (2026-11-21, dev host: macOS arm64, Oracle GraalVM 25.0.4, Redis 8.10.3, etcd v3.7.3)
+
+Delivered (ADR 0017 upstream resilience, ADR 0018 rate limiting + Redis client, ADR 0019 response cache):
+- **Resilience** (`gateway-proxy`):
+  - per-upstream circuit breaker (failure-rate and slow-call thresholds, half-open trial limit);
+  - passive outlier ejection with growing ejection time and `maxEjectionPercent`;
+  - process-wide active health checks through the SSRF resolver;
+  - availability-aware balancers, plus panic mode when no target is available;
+  - retries for idempotent methods only, with jittered backoff and a per-route budget (20% + 3/s);
+    bodies are retried only before they were read;
+  - mTLS to upstreams (`clientCert`).
+- **Plugins** (`gateway-plugins`, all with JSON Schemas in `config-model`):
+  - `ip-restriction`: real client IP via trusted proxies;
+  - `request-size-limit`: Content-Length check and a streaming cap;
+  - `cors`: preflight answered by the gateway; headers also on gateway errors;
+  - `request-transform`: path strip/add/template, query and header rename;
+  - `rate-limit`: token bucket, fixed window or sliding window; composite keys; local or global
+    (Redis, Lua, prefetch); fail-open or fail-closed; `RateLimit` / `RateLimit-Policy` /
+    `Retry-After` headers;
+  - `cache`: Caffeine L1 plus optional Redis L2, key isolation, Cache-Control rules, miss coalescing,
+    in-band stale-while-revalidate, purge by route or tag via `policies/cache-purge/{id}`.
+- **SPI** additions: `respondWith`, `respond(..., headers)`, `addResponseHeader`, `tapResponse`,
+  `limitRequestBody`. Problem responses now run header filters.
+- **Redis**: in-house pipelined RESP2 client (TLS, ACL auth from a password file, per-command
+  timeouts, bounded queue and parser, jittered reconnect). Configured by `GW_REDIS_*`.
+- **Native metadata**: Caffeine 3.2.4 reachability-repo metadata vendored, plus a reviewed file for
+  the four generated classes we use.
+- Docs: `configuration.md`, `authoring.md`, `etcd-keys.md`. Tests: `RedisTestNode` in test-support.
+
+Checks (all run on the dev host):
+- `./gradlew build` (Checkstyle, SpotBugs, OSV scan, unit tests): green, 162 JVM unit tests, including
+  `TrafficPipelineTest` (13), `ResilienceTest` (7), `CircuitBreakerTest` (5), RESP parser, algorithms,
+  cache rules, factories.
+- `./gradlew nativeTest`: green in all six modules (21 + 17 + 20 + 32 + 33 + 30 tests).
+- `./gradlew :integration-tests:integrationTest`: 28/28 green. Includes `TrafficIT` (4) against real
+  Redis:
+  - a global limit shared by two gateway processes;
+  - **Redis paused**: fail-open falls back to local limits, fail-closed returns 503, then recovery;
+  - L2 shared across processes;
+  - **miss coalescing**: 16 concurrent misses → 1 upstream request;
+  - Redis password absent from logs.
+- `./gradlew :integration-tests:nativeIntegrationTest`: 28/28 green, the same suites against the
+  native binary.
+- Native binary: 48.8 MB.
+- JMH `TrafficBenchmark` (dev host, JDK 25 JIT, 1 fork, `-prof gc`). The request is a dynamic-proxy
+  stand-in, so these are upper bounds:
+
+| Benchmark | ns/op | B/op |
+|---|---|---|
+| ip-restriction (3 allow CIDRs, 1 deny) | 36.9 | 48 |
+| CORS response headers | 36.6 | 120 |
+| rate limit, local token bucket, with headers | 84.9 | 440 |
+| cache hit (key, L1, purge check, serve) | 159.3 | 767 |
+
+Notes:
+- The first integration run failed because the Docker daemon had stopped ("Previous attempts to find
+  a Docker environment failed"). After restarting Docker Desktop, all suites passed; no code changed
+  in between.
+- Rate-limit local state is now size-bounded only (no access expiry): idle keys leave by eviction.
+  This keeps us on the Caffeine classes the reviewed metadata covers (ADR 0018).
+
+Not in M5 (planned later):
+- HMAC request signing (spec §9 "optional"): not done; it needs a replay cache. Revisit after M6.
+- WebSocket upgrade proxying and gRPC trailers / `TE: trailers` passthrough: still open, now M9
+  hardening.
+- Certificates from etcd (`certificates/`) and TLS hot reload: M6 (control-plane writer) and M9.
+- Redis-distributed token revocation: not done; revocation stays snapshot-local (etcd).
+- Redis TLS (`rediss://`) is implemented but no integration test covers it. Redis Cluster and
+  Sentinel are not supported.
+- Background (detached) stale-while-revalidate: we revalidate in-band instead (ADR 0019).
+- Breaker, rate-limit and cache metrics: M8; today they are logs only. Console forms for the new
+  schemas: M7. Purge API writing `policies/cache-purge/*`: M6.
 
 ## Known blockers
 

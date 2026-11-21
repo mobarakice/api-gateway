@@ -16,6 +16,7 @@ public final class CompiledRoute {
     private final String serviceId;
     private final CompiledUpstream upstream;
     private final ResolvedTimeouts timeouts;
+    private final RetryPolicy retries;
     private final boolean preserveHost;
     private final List<String> paramNames;
     final RequestPlugin[] rewrite;
@@ -30,13 +31,15 @@ public final class CompiledRoute {
     private final String tenantId;
 
     CompiledRoute(String id, String serviceId, CompiledUpstream upstream, ResolvedTimeouts timeouts,
-            boolean preserveHost, List<String> paramNames, RequestPlugin[] rewrite, RequestPlugin[] access,
+            RetryPolicy retries, boolean preserveHost, List<String> paramNames, RequestPlugin[] rewrite,
+            RequestPlugin[] access,
             RequestPlugin[] beforeProxy, ResponseHeadersPlugin[] headerFilter, LogPlugin[] log, int[] requestSlots,
             int[] headerFilterSlots, int[] logSlots, String tenantId) {
         this.id = id;
         this.serviceId = serviceId;
         this.upstream = upstream;
         this.timeouts = timeouts;
+        this.retries = retries;
         this.preserveHost = preserveHost;
         this.paramNames = List.copyOf(paramNames);
         this.rewrite = rewrite;
@@ -83,6 +86,11 @@ public final class CompiledRoute {
 
     public CompiledUpstream upstream() {
         return upstream;
+    }
+
+    /** Retry policy; {@link RetryPolicy#NONE} when off. */
+    public RetryPolicy retries() {
+        return retries;
     }
 
     public ResolvedTimeouts timeouts() {

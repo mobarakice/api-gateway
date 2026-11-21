@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://apigw.local/schemas/plugins/request-size-limit.json",
+  "title": "request-size-limit plugin",
+  "description": "Per-route request body cap (never above settings.maxRequestBodyBytes). Over the cap: 413, also for chunked bodies.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["maxBytes"],
+  "properties": {
+    "maxBytes": { "type": "integer", "minimum": 0, "maximum": 2147483647 }
+  }
+}

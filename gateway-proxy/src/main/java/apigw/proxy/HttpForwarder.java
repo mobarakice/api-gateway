@@ -21,6 +21,8 @@ public final class HttpForwarder implements Forwarder {
 
     private final Vertx vertx;
     private final TargetResolver resolver;
+    private final HealthChecker health;
+    private final Map<String, RetryBudget> budgets = new HashMap<>();
     private final Map<String, UpstreamState> states = new HashMap<>();
     private long generation;
 
@@ -29,8 +31,17 @@ public final class HttpForwarder implements Forwarder {
     }
 
     public HttpForwarder(Vertx vertx, TargetResolver resolver) {
+        this(vertx, resolver, null);
+    }
+
+    /**
+     * @param health process-wide active health checker shared by all event loops; null = active checks
+     *               are not run (passive ejection and breakers still work)
+     */
+    public HttpForwarder(Vertx vertx, TargetResolver resolver, HealthChecker health) {
         this.vertx = vertx;
         this.resolver = resolver;
+        this.health = health;
     }
 
     @Override
@@ -47,14 +58,18 @@ public final class HttpForwarder implements Forwarder {
             if (state != null) {
                 state.retire();
             }
-            state = new UpstreamState(vertx, def);
+            state = new UpstreamState(vertx, def, health);
             states.put(def.id(), state);
         }
-        new ProxyCall(vertx, resolver, state, exchange).start();
+        RetryBudget budget = exchange.route().retries().attempts() == 0 ? null
+                : budgets.computeIfAbsent(exchange.route().id(), k -> new RetryBudget());
+        new ProxyCall(vertx, resolver, state, exchange, budget).start();
     }
 
     private void reconcile(Snapshot snapshot) {
         generation = snapshot.generation();
+        // Budgets are short-lived windows; dropping them on a config change bounds the map to live routes.
+        budgets.clear();
         Iterator<Map.Entry<String, UpstreamState>> it = states.entrySet().iterator();
         while (it.hasNext()) {
             Map.Entry<String, UpstreamState> e = it.next();

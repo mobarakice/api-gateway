@@ -15,7 +15,8 @@ gateway's snapshot build.
 | `global-plugins/{name}` | control plane | yes | envelope `kind: GlobalPlugin`, `id` = plugin name; spec = `{enabled?, config?}` |
 | `policies/authz/{id}` | control plane | yes | kind `AuthzPolicy` (ADR 0016) |
 | `policies/revoked-tokens/{id}` | control plane | yes | kind `RevokedToken`; spec `{jti, issuer?, expiresAt}`; ≤ 100,000 |
-| `policies/{type}/{id}` (other types) | control plane | yes | rate-limit and cache types arrive in M5; until then any other type rejects the state |
+| `policies/cache-purge/{id}` | control plane | yes | kind `CachePurge`; spec `{routeId | tag, issuedAt}`; ≤ 10,000 (ADR 0019) |
+| `policies/{type}/{id}` (other types) | control plane | yes | unknown types reject the state (rate limits are plugin config, not policies) |
 | `certificates/{id}` | control plane | yes | references to key material, not raw private keys |
 | `meta/schema-version` | control plane (migrations) | yes | plain integer (`1`), not an envelope. Required: a keyspace without it is rejected |
 | `meta/settings` | control plane | yes | envelope `kind: Settings`, `id: settings`; spec = the `settings` object of the config document. Optional (defaults) |

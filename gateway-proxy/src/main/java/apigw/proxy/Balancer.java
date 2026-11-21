@@ -10,10 +10,19 @@ import java.util.concurrent.ThreadLocalRandom;
 /**
  * Target selection. Instances are per event loop and per upstream definition, so state needs no
  * synchronisation. {@code inflight[i]} is the number of requests this loop has open to target i.
+ * {@code av} says which targets may be chosen; {@code -1} means none of them can.
  */
 sealed interface Balancer {
 
-    int pick(ProxyExchange exchange, int[] inflight);
+    /** Which targets may be picked. */
+    @FunctionalInterface
+    interface Availability {
+        Availability ALL = i -> true;
+
+        boolean ok(int target);
+    }
+
+    int pick(ProxyExchange exchange, int[] inflight, Availability av);
 
     static Balancer of(CompiledUpstream u) {
         int n = u.targets().size();
@@ -33,8 +42,8 @@ sealed interface Balancer {
     /** One target. */
     record Single() implements Balancer {
         @Override
-        public int pick(ProxyExchange exchange, int[] inflight) {
-            return 0;
+        public int pick(ProxyExchange exchange, int[] inflight, Availability av) {
+            return av.ok(0) ? 0 : -1;
         }
     }
 
@@ -49,10 +58,16 @@ sealed interface Balancer {
         }
 
         @Override
-        public int pick(ProxyExchange exchange, int[] inflight) {
+        public int pick(ProxyExchange exchange, int[] inflight, Availability av) {
             int i = next;
-            next = i + 1 == n ? 0 : i + 1;
-            return i;
+            for (int k = 0; k < n; k++) {
+                if (av.ok(i)) {
+                    next = i + 1 == n ? 0 : i + 1;
+                    return i;
+                }
+                i = i + 1 == n ? 0 : i + 1;
+            }
+            return -1;
         }
     }
 
@@ -69,15 +84,33 @@ sealed interface Balancer {
         }
 
         @Override
-        public int pick(ProxyExchange exchange, int[] inflight) {
-            int best = 0;
+        public int pick(ProxyExchange exchange, int[] inflight, Availability av) {
+            if (av == Availability.ALL) {
+                int best = 0;
+                for (int i = 0; i < weights.length; i++) {
+                    current[i] += weights[i];
+                    if (current[i] > current[best]) {
+                        best = i;
+                    }
+                }
+                current[best] -= total;
+                return best;
+            }
+            // Smooth weighting over the available targets only.
+            int best = -1;
+            int sum = 0;
             for (int i = 0; i < weights.length; i++) {
-                current[i] += weights[i];
-                if (current[i] > current[best]) {
-                    best = i;
+                if (av.ok(i)) {
+                    current[i] += weights[i];
+                    sum += weights[i];
+                    if (best < 0 || current[i] > current[best]) {
+                        best = i;
+                    }
                 }
             }
-            current[best] -= total;
+            if (best >= 0) {
+                current[best] -= sum;
+            }
             return best;
         }
     }
@@ -91,7 +124,7 @@ sealed interface Balancer {
         }
 
         @Override
-        public int pick(ProxyExchange exchange, int[] inflight) {
+        public int pick(ProxyExchange exchange, int[] inflight, Availability av) {
             ThreadLocalRandom rnd = ThreadLocalRandom.current();
             int n = weights.length;
             int a = rnd.nextInt(n);
@@ -99,10 +132,30 @@ sealed interface Balancer {
             if (b >= a) {
                 b++;
             }
+            if (av != Availability.ALL) {
+                a = nextOk(a, -1, av);
+                if (a < 0) {
+                    return -1;
+                }
+                b = nextOk(b, a, av);
+                if (b < 0) {
+                    return a;
+                }
+            }
             // Compare inflight[a]/w[a] with inflight[b]/w[b] without division.
             long la = (long) inflight[a] * weights[b];
             long lb = (long) inflight[b] * weights[a];
             return la <= lb ? a : b;
+        }
+
+        private int nextOk(int from, int not, Availability av) {
+            int n = weights.length;
+            for (int k = 0, i = from; k < n; k++, i = i + 1 == n ? 0 : i + 1) {
+                if (i != not && av.ok(i)) {
+                    return i;
+                }
+            }
+            return -1;
         }
     }
 
@@ -131,19 +184,31 @@ sealed interface Balancer {
         }
 
         @Override
-        public int pick(ProxyExchange exchange, int[] inflight) {
+        public int pick(ProxyExchange exchange, int[] inflight, Availability av) {
             String key = header == null ? exchange.clientIp() : exchange.request().headers().get(header);
             if (key == null) {
                 key = exchange.clientIp();
             }
-            return ownerOf(hash(key));
+            int at = indexOf(hash(key));
+            // Walk the ring to the next available owner: only the unavailable target's keys move.
+            for (int k = 0; k < points.length; k++) {
+                int owner = owners[(at + k) % points.length];
+                if (av.ok(owner)) {
+                    return owner;
+                }
+            }
+            return -1;
         }
 
         int ownerOf(long h) {
+            return owners[indexOf(h)];
+        }
+
+        private int indexOf(long h) {
             int lo = 0;
             int hi = points.length - 1;
             if (Long.compareUnsigned(h, points[hi]) > 0) {
-                return owners[0];
+                return 0;
             }
             while (lo < hi) {
                 int mid = (lo + hi) >>> 1;
@@ -153,7 +218,7 @@ sealed interface Balancer {
                     hi = mid;
                 }
             }
-            return owners[lo];
+            return lo;
         }
 
         /** FNV-1a 64 over UTF-16 units, then the SplitMix64 finaliser for avalanche. Not cryptographic. */

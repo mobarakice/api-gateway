@@ -2,6 +2,7 @@ package apigw.config.worker;
 
 import apigw.config.etcd.KeyValue;
 import apigw.model.AuthzPolicy;
+import apigw.model.CachePurge;
 import apigw.model.ConfigDecoder;
 import apigw.model.Consumer;
 import apigw.model.Credential;
@@ -51,7 +52,7 @@ public final class EtcdSnapshotBuilder {
             "updatedBy", "spec");
     private static final Pattern INDEXED = Pattern.compile(
             "^(routes|services|upstreams|globalPlugins|consumers|credentials|authzPolicies|pluginConfigs"
-                    + "|revokedTokens)\\[(\\d+)]");
+                    + "|revokedTokens|cachePurges)\\[(\\d+)]");
 
     private EtcdSnapshotBuilder() {
     }
@@ -80,6 +81,7 @@ public final class EtcdSnapshotBuilder {
         List<AuthzPolicy> policies = new ArrayList<>();
         List<PluginConfigSet> pluginConfigs = new ArrayList<>();
         List<RevokedToken> revoked = new ArrayList<>();
+        List<CachePurge> purges = new ArrayList<>();
         Settings settings = Settings.DEFAULTS;
         Integer schemaVersion = null;
         List<KeyValue> sorted = new ArrayList<>(kvs);
@@ -117,9 +119,12 @@ public final class EtcdSnapshotBuilder {
                 } else if (rel.startsWith("policies/revoked-tokens/")) {
                     revoked.add(ConfigDecoder.decodeRevokedToken(specWithId(kv, rel, "RevokedToken", "id"),
                             rel + ".spec"));
+                } else if (rel.startsWith("policies/cache-purge/")) {
+                    purges.add(ConfigDecoder.decodeCachePurge(specWithId(kv, rel, "CachePurge", "id"),
+                            rel + ".spec"));
                 } else if (rel.startsWith("policies/")) {
-                    errors.add(new ConfigError(rel, "unknown policy type (expected policies/authz/ or "
-                            + "policies/revoked-tokens/)"));
+                    errors.add(new ConfigError(rel, "unknown policy type (expected policies/authz/, "
+                            + "policies/revoked-tokens/ or policies/cache-purge/)"));
                 } else if (notYetCompiled(rel)) {
                     envelope(kv, rel);
                 }
@@ -134,7 +139,7 @@ public final class EtcdSnapshotBuilder {
             throw new ConfigException(errors);
         }
         return new GatewayConfig(schemaVersion, revision, settings, routes, services, upstreams, global, consumers,
-                credentials, policies, pluginConfigs, revoked);
+                credentials, policies, pluginConfigs, revoked, purges);
     }
 
     private static boolean notYetCompiled(String rel) {
@@ -281,6 +286,8 @@ public final class EtcdSnapshotBuilder {
                         ? "plugin-configs/" + config.pluginConfigs().get(i).id() : null;
                 case "revokedTokens" -> i < config.revokedTokens().size()
                         ? "policies/revoked-tokens/" + config.revokedTokens().get(i).id() : null;
+                case "cachePurges" -> i < config.cachePurges().size()
+                        ? "policies/cache-purge/" + config.cachePurges().get(i).id() : null;
                 default -> i < config.globalPlugins().size()
                         ? "global-plugins/" + config.globalPlugins().get(i).name() : null;
             };

@@ -120,6 +120,13 @@ public final class ConfigDecoder {
         return c;
     }
 
+    public static CachePurge decodeCachePurge(JsonNode node, String path) throws ConfigException {
+        ConfigDecoder d = new ConfigDecoder();
+        CachePurge c = d.cachePurge(node, path);
+        d.throwIfErrors();
+        return c;
+    }
+
     public static RevokedToken decodeRevokedToken(JsonNode node, String path) throws ConfigException {
         ConfigDecoder d = new ConfigDecoder();
         RevokedToken c = d.revokedToken(node, path);
@@ -138,7 +145,8 @@ public final class ConfigDecoder {
             return null;
         }
         known(n, "$", Set.of("schemaVersion", "revision", "settings", "routes", "services", "upstreams",
-                "globalPlugins", "consumers", "credentials", "authzPolicies", "pluginConfigs", "revokedTokens"));
+                "globalPlugins", "consumers", "credentials", "authzPolicies", "pluginConfigs", "revokedTokens",
+                "cachePurges"));
         int schemaVersion = intField(n, "$", "schemaVersion", null);
         long revision = longField(n, "$", "revision", 0L);
         Settings settings = n.has("settings") ? settings(n.get("settings"), "settings") : Settings.DEFAULTS;
@@ -159,11 +167,13 @@ public final class ConfigDecoder {
         each(n, "$", "pluginConfigs", (item, p) -> pluginConfigs.add(pluginConfig(item, p)));
         List<RevokedToken> revoked = new ArrayList<>();
         each(n, "$", "revokedTokens", (item, p) -> revoked.add(revokedToken(item, p)));
+        List<CachePurge> purges = new ArrayList<>();
+        each(n, "$", "cachePurges", (item, p) -> purges.add(cachePurge(item, p)));
         if (!errors.isEmpty()) {
             return null;
         }
         return new GatewayConfig(schemaVersion, revision, settings, routes, services, upstreams, global, consumers,
-                credentials, policies, pluginConfigs, revoked);
+                credentials, policies, pluginConfigs, revoked, purges);
     }
 
     private Settings settings(JsonNode n, String path) {
@@ -190,7 +200,7 @@ public final class ConfigDecoder {
             return null;
         }
         known(n, path, Set.of("id", "hosts", "methods", "path", "match", "headers", "query", "priority",
-                "serviceId", "timeouts", "plugins", "preserveHost", "kind", "schemaVersion", "tenantId",
+                "serviceId", "timeouts", "plugins", "preserveHost", "retries", "kind", "schemaVersion", "tenantId",
                 "updatedAt", "updatedBy"));
         return new Route(
                 stringField(n, path, "id", null),
@@ -205,6 +215,7 @@ public final class ConfigDecoder {
                 n.has("timeouts") ? timeouts(n.get("timeouts"), path + ".timeouts") : Timeouts.UNSET,
                 plugins(n, path, "plugins"),
                 boolField(n, path, "preserveHost", false),
+                n.has("retries") ? retries(n.get("retries"), path + ".retries") : null,
                 tenant(n, path));
     }
 
@@ -212,14 +223,112 @@ public final class ConfigDecoder {
         if (!object(n, path)) {
             return null;
         }
-        known(n, path, Set.of("id", "upstreamId", "timeouts", "plugins", "kind", "schemaVersion", "tenantId",
-                "updatedAt", "updatedBy"));
+        known(n, path, Set.of("id", "upstreamId", "timeouts", "plugins", "retries", "kind", "schemaVersion",
+                "tenantId", "updatedAt", "updatedBy"));
         return new Service(
                 stringField(n, path, "id", null),
                 stringField(n, path, "upstreamId", null),
                 n.has("timeouts") ? timeouts(n.get("timeouts"), path + ".timeouts") : Timeouts.UNSET,
                 plugins(n, path, "plugins"),
+                n.has("retries") ? retries(n.get("retries"), path + ".retries") : null,
                 tenant(n, path));
+    }
+
+    private Retries retries(JsonNode n, String path) {
+        if (!object(n, path)) {
+            return null;
+        }
+        known(n, path, Set.of("attempts", "on", "backoffMs", "maxBackoffMs", "budgetPercent", "minRetriesPerSecond",
+                "methods"));
+        Set<Retries.RetryOn> on = new java.util.HashSet<>();
+        if (n.has("on")) {
+            List<String> raw = strings(n, path, "on");
+            for (int i = 0; i < raw.size(); i++) {
+                String v = raw.get(i).trim().toLowerCase(Locale.ROOT);
+                Retries.RetryOn r = switch (v) {
+                    case "connect-failure" -> Retries.RetryOn.CONNECT_FAILURE;
+                    case "reset" -> Retries.RetryOn.RESET;
+                    case "timeout" -> Retries.RetryOn.TIMEOUT;
+                    case "502" -> Retries.RetryOn.STATUS_502;
+                    case "503" -> Retries.RetryOn.STATUS_503;
+                    case "504" -> Retries.RetryOn.STATUS_504;
+                    default -> null;
+                };
+                if (r == null) {
+                    errors.add(new ConfigError(path + ".on[" + i + "]", "unknown retry condition '" + raw.get(i)
+                            + "' (connect-failure, reset, timeout, 502, 503, 504)"));
+                } else {
+                    on.add(r);
+                }
+            }
+        } else {
+            on.addAll(Retries.DEFAULT_ON);
+        }
+        Retries d = Retries.NONE;
+        return new Retries(intField(n, path, "attempts", 1), on, intField(n, path, "backoffMs", d.backoffMs()),
+                intField(n, path, "maxBackoffMs", d.maxBackoffMs()),
+                intField(n, path, "budgetPercent", d.budgetPercent()),
+                intField(n, path, "minRetriesPerSecond", d.minRetriesPerSecond()),
+                n.has("methods") ? strings(n, path, "methods") : Retries.IDEMPOTENT);
+    }
+
+    private Upstream.HealthCheck healthCheck(JsonNode n, String path) {
+        if (!object(n, path)) {
+            return Upstream.HealthCheck.NONE;
+        }
+        known(n, path, Set.of("active", "passive"));
+        Upstream.Active active = null;
+        if (n.has("active") && object(n.get("active"), path + ".active")) {
+            JsonNode a = n.get("active");
+            String p = path + ".active";
+            known(a, p, Set.of("path", "host", "intervalMs", "timeoutMs", "healthyThreshold", "unhealthyThreshold",
+                    "statuses"));
+            List<Integer> statuses = new ArrayList<>();
+            each(a, p, "statuses", (item, ip) -> {
+                if (item.isIntegralNumber() && item.canConvertToInt()) {
+                    statuses.add(item.intValue());
+                } else {
+                    errors.add(new ConfigError(ip, "must be an integer"));
+                }
+            });
+            active = new Upstream.Active(stringField(a, p, "path", "/"), stringField(a, p, "host", ""),
+                    intField(a, p, "intervalMs", 5_000), intField(a, p, "timeoutMs", 1_000),
+                    intField(a, p, "healthyThreshold", 2), intField(a, p, "unhealthyThreshold", 3), statuses);
+        }
+        Upstream.Passive passive = null;
+        if (n.has("passive") && object(n.get("passive"), path + ".passive")) {
+            JsonNode a = n.get("passive");
+            String p = path + ".passive";
+            known(a, p, Set.of("consecutiveFailures", "ejectionMs", "maxEjectionPercent"));
+            passive = new Upstream.Passive(intField(a, p, "consecutiveFailures", 5),
+                    intField(a, p, "ejectionMs", 30_000),
+                    intField(a, p, "maxEjectionPercent", 50));
+        }
+        return new Upstream.HealthCheck(active, passive);
+    }
+
+    private Upstream.CircuitBreaker circuitBreaker(JsonNode n, String path) {
+        if (!object(n, path)) {
+            return null;
+        }
+        known(n, path, Set.of("windowSeconds", "minCalls", "failureRatePercent", "slowCallMs", "slowCallRatePercent",
+                "openMs", "halfOpenCalls", "failureStatuses"));
+        List<Integer> statuses = new ArrayList<>();
+        if (n.has("failureStatuses")) {
+            each(n, path, "failureStatuses", (item, ip) -> {
+                if (item.isIntegralNumber() && item.canConvertToInt()) {
+                    statuses.add(item.intValue());
+                } else {
+                    errors.add(new ConfigError(ip, "must be an integer"));
+                }
+            });
+        } else {
+            statuses.addAll(List.of(502, 503, 504));
+        }
+        return new Upstream.CircuitBreaker(intField(n, path, "windowSeconds", 10), intField(n, path, "minCalls", 20),
+                intField(n, path, "failureRatePercent", 50), intField(n, path, "slowCallMs", 0),
+                intField(n, path, "slowCallRatePercent", 100), intField(n, path, "openMs", 30_000),
+                intField(n, path, "halfOpenCalls", 3), statuses);
     }
 
     private Upstream upstream(JsonNode n, String path) {
@@ -227,7 +336,8 @@ public final class ConfigDecoder {
             return null;
         }
         known(n, path, Set.of("id", "scheme", "caFile", "targets", "balancer", "hashKey", "pool", "http2",
-                "kind", "schemaVersion", "tenantId", "updatedAt", "updatedBy"));
+                "healthCheck", "circuitBreaker", "clientCert", "kind", "schemaVersion", "tenantId", "updatedAt",
+                "updatedBy"));
         List<Upstream.Target> targets = new ArrayList<>();
         each(n, path, "targets", (item, p) -> {
             if (object(item, p)) {
@@ -255,7 +365,21 @@ public final class ConfigDecoder {
                 stringField(n, path, "hashKey", ""),
                 pool,
                 boolField(n, path, "http2", false),
+                n.has("healthCheck") ? healthCheck(n.get("healthCheck"), path + ".healthCheck")
+                        : Upstream.HealthCheck.NONE,
+                n.has("circuitBreaker") ? circuitBreaker(n.get("circuitBreaker"), path + ".circuitBreaker") : null,
+                n.has("clientCert") ? clientCert(n.get("clientCert"), path + ".clientCert") : null,
                 tenant(n, path));
+    }
+
+    private Upstream.ClientCert clientCert(JsonNode n, String path) {
+        if (!object(n, path)) {
+            return null;
+        }
+        known(n, path, Set.of("certFile", "keyFile"));
+        String cert = stringField(n, path, "certFile", null);
+        String key = stringField(n, path, "keyFile", null);
+        return cert == null || key == null ? null : new Upstream.ClientCert(Path.of(cert), Path.of(key));
     }
 
     private Timeouts timeouts(JsonNode n, String path) {
@@ -430,6 +554,29 @@ public final class ConfigDecoder {
         String issuer = stringField(n, path, "issuer", "");
         return new RevokedToken(stringField(n, path, "id", null), stringField(n, path, "jti", null),
                 issuer.isEmpty() ? null : issuer, expiresAt);
+    }
+
+    private CachePurge cachePurge(JsonNode n, String path) {
+        if (!object(n, path)) {
+            return null;
+        }
+        known(n, path, withEnvelope("id", "routeId", "tag", "issuedAt"));
+        String at = stringField(n, path, "issuedAt", null);
+        java.time.Instant issuedAt = null;
+        if (at != null) {
+            try {
+                issuedAt = java.time.Instant.parse(at);
+            } catch (java.time.format.DateTimeParseException e) {
+                errors.add(new ConfigError(path + ".issuedAt", "must be an RFC 3339 UTC timestamp"));
+            }
+        }
+        String route = stringField(n, path, "routeId", "");
+        String tag = stringField(n, path, "tag", "");
+        if (route.isEmpty() == tag.isEmpty()) {
+            errors.add(new ConfigError(path, "set exactly one of routeId and tag"));
+        }
+        return new CachePurge(stringField(n, path, "id", null), route.isEmpty() ? null : route,
+                tag.isEmpty() ? null : tag, issuedAt);
     }
 
     // ---- primitive helpers -------------------------------------------------------------------

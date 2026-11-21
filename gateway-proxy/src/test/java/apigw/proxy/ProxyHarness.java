@@ -18,6 +18,7 @@ import io.vertx.core.json.JsonObject;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -33,6 +34,9 @@ final class ProxyHarness {
     int gatewayPort;
     /** DNS for the gateway's upstream resolution; null = the platform resolver. */
     TargetResolver.Lookup lookup;
+    /** Active health checker shared by the gateway's event loops; created by {@link #startGateway}. */
+    HealthChecker health;
+    private final Map<String, AtomicInteger> flaky = new java.util.concurrent.ConcurrentHashMap<>();
 
     /** An echo upstream. Paths: /status/{code}, .../slow/{ms}, /bytes/{n}, anything else echoes. */
     static final class Echo {
@@ -64,6 +68,14 @@ final class ProxyHarness {
 
     private void handleEcho(String name, HttpServerRequest req) {
         String path = req.path();
+        if (path.startsWith("/flaky/")) {
+            // /flaky/{n}/{key}: 503 for the first n hits of this exact path, then echo.
+            int n = Integer.parseInt(path.split("/")[2]);
+            if (flaky.computeIfAbsent(path, k -> new AtomicInteger()).incrementAndGet() <= n) {
+                req.response().setStatusCode(503).end();
+                return;
+            }
+        }
         if (path.startsWith("/status/")) {
             req.response().setStatusCode(Integer.parseInt(path.substring(8))).end();
             return;
@@ -108,6 +120,21 @@ final class ProxyHarness {
         });
     }
 
+    /** An upstream with its own behaviour; counts hits. */
+    Echo custom(String name, io.vertx.core.Handler<HttpServerRequest> handler) throws Exception {
+        AtomicInteger[] hits = new AtomicInteger[1];
+        HttpServer server = vertx.createHttpServer(new HttpServerOptions().setHost("127.0.0.1").setPort(0))
+                .requestHandler(req -> {
+                    hits[0].incrementAndGet();
+                    handler.handle(req);
+                });
+        await(server.listen());
+        Echo e = new Echo(name, server);
+        hits[0] = e.hits;
+        upstreams.add(e);
+        return e;
+    }
+
     /** Starts the gateway front end on one event loop. */
     void startGateway(HttpServerOptions options) throws Exception {
         int[] port = new int[1];
@@ -116,8 +143,10 @@ final class ProxyHarness {
 
             @Override
             public Future<?> start() {
-                forwarder = lookup == null ? new HttpForwarder(vertx)
-                        : new HttpForwarder(vertx, new TargetResolver(vertx, lookup));
+                TargetResolver resolver = lookup == null ? new TargetResolver(vertx)
+                        : new TargetResolver(vertx, lookup);
+                health = new HealthChecker(vertx, resolver);
+                forwarder = new HttpForwarder(vertx, resolver, health);
                 return vertx.createHttpServer(options.setHost("127.0.0.1").setPort(0))
                         .requestHandler(new Pipeline(holder, forwarder)).listen()
                         .onSuccess(s -> port[0] = s.actualPort());
@@ -140,6 +169,9 @@ final class ProxyHarness {
         Snapshot s = new SnapshotCompiler(registry)
                 .compile(ConfigDecoder.decode(json.getBytes(StandardCharsets.UTF_8)));
         holder.publish(s);
+        if (health != null) {
+            health.sync(s);
+        }
         return s;
     }
 

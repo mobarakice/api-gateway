@@ -89,4 +89,34 @@ public final class Configs {
         }
         return out;
     }
+
+    /** RFC 9110 token (header name, query key characters are checked separately). */
+    public static boolean token(String s) {
+        if (s.isEmpty() || s.length() > 256) {
+            return false;
+        }
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            boolean ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+                    || "!#$%&'*+-.^_`|~".indexOf(c) >= 0;
+            if (!ok) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Lower-cased header names from {@code field}; each must be a token. */
+    public static List<String> headerNames(JsonNode n, String p, String field, List<ConfigError> errors) {
+        List<String> raw = strings(n, p, field, errors);
+        List<String> out = new ArrayList<>(raw.size());
+        for (int i = 0; i < raw.size(); i++) {
+            if (!token(raw.get(i))) {
+                errors.add(new ConfigError(path(p, field) + "[" + i + "]", "not a valid header name"));
+            } else {
+                out.add(raw.get(i).toLowerCase(java.util.Locale.ROOT));
+            }
+        }
+        return out;
+    }
 }

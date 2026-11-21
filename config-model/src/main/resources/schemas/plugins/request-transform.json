@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://apigw.local/schemas/plugins/request-transform.json",
+  "title": "request-transform plugin",
+  "description": "Rewrites the upstream path (prefix strip/add or a template with route parameters), query (remove, rename, set, add) and renames headers.",
+  "type": "object",
+  "additionalProperties": false,
+  "minProperties": 1,
+  "properties": {
+    "path": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false, "minProperties": 1,
+          "properties": {
+            "stripPrefix": { "$ref": "#/$defs/pathText" },
+            "addPrefix": { "$ref": "#/$defs/pathText" }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["template"],
+          "properties": { "template": { "type": "string", "pattern": "^/[A-Za-z0-9\\-._~!$&'()*+,;=:@/%{}]*$" } }
+        }
+      ]
+    },
+    "query": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "remove": { "type": "array", "items": { "$ref": "#/$defs/key" } },
+        "rename": { "type": "object", "propertyNames": { "$ref": "#/$defs/key" }, "additionalProperties": { "$ref": "#/$defs/key" } },
+        "set": { "type": "object", "propertyNames": { "$ref": "#/$defs/key" }, "additionalProperties": { "type": "string" } },
+        "add": { "type": "object", "propertyNames": { "$ref": "#/$defs/key" }, "additionalProperties": { "type": "string" } }
+      }
+    },
+    "headers": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "rename": { "type": "object", "propertyNames": { "$ref": "#/$defs/name" }, "additionalProperties": { "$ref": "#/$defs/name" } }
+      }
+    }
+  },
+  "$defs": {
+    "pathText": { "type": "string", "pattern": "^/[A-Za-z0-9\\-._~!$&'()*+,;=:@/%]*$" },
+    "key": { "type": "string", "pattern": "^[A-Za-z0-9\\-._~]{1,256}$" },
+    "name": {
+      "type": "string",
+      "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,256}$",
+      "not": { "pattern": "^(?i)(connection|keep-alive|proxy-connection|te|trailer|transfer-encoding|upgrade|content-length|host|http2-settings|x-consumer-id|x-consumer-username|x-tenant-id|x-authenticated-user|x-credential-identifier|x-forwarded-for|forwarded|x-request-id)$" }
+    }
+  }
+}

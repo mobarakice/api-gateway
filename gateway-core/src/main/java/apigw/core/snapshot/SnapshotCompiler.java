@@ -151,7 +151,7 @@ public final class SnapshotCompiler {
                 settings.viaName(), settings.maxRequestBodyBytes(),
                 settings.upstreamAllowCidrs().stream().map(Cidr::parse).toList());
         return new Snapshot(GENERATION.incrementAndGet(), config.revision(), cs, router, upstreams,
-                config.routes().size(), security, ctx.resources());
+                config.routes().size(), security, ctx.resources(), CachePurges.of(config.cachePurges()));
     }
 
     /** Per-compile state shared by the resolve calls. */
@@ -279,7 +279,8 @@ public final class SnapshotCompiler {
         requestList.addAll(request(plugins, Phase.REWRITE));
         requestList.addAll(request(plugins, Phase.ACCESS));
         requestList.addAll(request(plugins, Phase.BEFORE_PROXY));
-        return new CompiledRoute(r.id(), s.id(), u, t, r.preserveHost(), params,
+        return new CompiledRoute(r.id(), s.id(), u, t, RetryPolicy.of(r.retries() != null ? r.retries() : s.retries()),
+                r.preserveHost(), params,
                 instances(request(plugins, Phase.REWRITE), RequestPlugin.class, RequestPlugin[]::new),
                 instances(request(plugins, Phase.ACCESS), RequestPlugin.class, RequestPlugin[]::new),
                 instances(request(plugins, Phase.BEFORE_PROXY), RequestPlugin.class, RequestPlugin[]::new),
@@ -318,9 +319,11 @@ public final class SnapshotCompiler {
         }
         String hashHeader = u.hashKey().startsWith("header:")
                 ? u.hashKey().substring(7).toLowerCase(java.util.Locale.ROOT) : null;
+        // Everything the per-loop pool, balancer, breaker and health state depend on: a change rebuilds them.
         String key = u.scheme() + "|" + u.caFile().map(Object::toString).orElse("") + "|" + u.http2() + "|"
-                + u.pool() + "|" + u.targets();
+                + u.pool() + "|" + u.targets() + "|" + u.balancer() + "|" + u.hashKey() + "|" + u.healthCheck() + "|"
+                + u.circuitBreaker() + "|" + u.clientCert();
         return new CompiledUpstream(u.id(), u.scheme(), u.caFile(), targets, u.balancer(), hashHeader, u.pool(),
-                u.http2(), key);
+                u.http2(), u.healthCheck(), u.circuitBreaker(), u.clientCert(), key);
     }
 }

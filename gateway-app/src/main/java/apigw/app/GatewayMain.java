@@ -6,10 +6,14 @@ import apigw.config.file.FileConfigSource;
 import apigw.config.worker.ConfigWorker;
 import apigw.config.worker.WorkerStatus;
 import apigw.core.pipeline.RequestIds;
+import apigw.core.snapshot.Snapshot;
 import apigw.core.snapshot.SnapshotCompiler;
 import apigw.core.snapshot.SnapshotHolder;
 import apigw.core.plugin.PluginServices;
 import apigw.plugins.BuiltinPlugins;
+import apigw.plugins.cache.ResponseCache;
+import apigw.plugins.ratelimit.RateLimitStore;
+import apigw.plugins.redis.RedisClient;
 import apigw.plugins.jwt.OidcKeySources;
 import apigw.observability.logging.JsonLogging;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -28,6 +32,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
@@ -65,8 +70,14 @@ public final class GatewayMain {
 
     private static void serve(Map<String, String> env, long startedNanos) {
         BootstrapConfig config;
+        Optional<RedisClient.Settings> redisSettings;
+        long cacheBytes;
+        long rateLimitKeys;
         try {
             config = BootstrapConfig.fromEnvironment(env);
+            redisSettings = RedisEnv.settings(env);
+            cacheBytes = RedisEnv.number(env, "GW_CACHE_MAX_BYTES", 64L << 20);
+            rateLimitKeys = RedisEnv.number(env, "GW_RATELIMIT_MAX_KEYS", 200_000);
         } catch (IllegalArgumentException e) {
             LOG.error("invalid startup configuration: {}", e.getMessage());
             System.exit(2);
@@ -77,18 +88,32 @@ public final class GatewayMain {
                 .setPreferNativeTransport(false));
         Readiness readiness = new Readiness();
         SnapshotHolder snapshots = new SnapshotHolder();
-        // Long-lived plugin services: the OIDC/JWKS key-set cache fetches on its own context (ADR 0015).
-        PluginServices services = new PluginServices(Map.of(OidcKeySources.class,
-                new OidcKeySources(vertx, Duration.ofSeconds(5))));
+        // Long-lived plugin services: the OIDC/JWKS key-set cache fetches on its own context (ADR 0015);
+        // rate-limit state and the response cache survive snapshot swaps; Redis is optional (ADR 0018, 0019).
+        RedisClient redis = redisSettings.map(r -> new RedisClient(vertx, r)).orElse(null);
+        if (redis == null) {
+            LOG.info("GW_REDIS_URL not set: global rate limits use their fail mode; cache L2 disabled");
+        }
+        PluginServices services = new PluginServices(Map.of(
+                OidcKeySources.class, new OidcKeySources(vertx, Duration.ofSeconds(5)),
+                RateLimitStore.class, new RateLimitStore(rateLimitKeys, redis),
+                ResponseCache.class, new ResponseCache(cacheBytes, redis)));
         SnapshotCompiler compiler = new SnapshotCompiler(BuiltinPlugins.registry(), services, Clock.systemUTC());
-        GatewayServer server = new GatewayServer(vertx, config, readiness, snapshots);
+        // Process-wide upstream services: SSRF-checked DNS and active health probes (ADR 0015, 0017).
+        Upstreams upstreams = Upstreams.create(vertx);
+        GatewayServer server = new GatewayServer(vertx, config, readiness, snapshots, upstreams);
+        // After every publish: plugin services and health probes follow the new snapshot.
+        Consumer<Snapshot> published = s -> {
+            compiler.services().published(s.resources());
+            upstreams.health().sync(s);
+        };
         Runtime.getRuntime().addShutdownHook(new Thread(() -> shutdown(vertx, server, config.shutdownGrace()),
                 "gateway-shutdown"));
         server.start()
                 .onSuccess(v -> LOG.info("gateway listening http={} https={} status={} eventLoops={} startupMs={}",
                         server.httpPort(), server.httpsPort(), server.statusPort(), config.eventLoops(),
                         TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos)))
-                .onSuccess(v -> startConfig(vertx, env, compiler, snapshots, readiness, startedNanos))
+                .onSuccess(v -> startConfig(vertx, env, compiler, published, snapshots, readiness, startedNanos))
                 .onFailure(e -> {
                     LOG.error("gateway failed to start: {}", e.toString());
                     vertx.close().onComplete(ignored -> System.exit(1));
@@ -100,6 +125,7 @@ public final class GatewayMain {
      * in M3. Without a valid source the gateway serves 503 and stays not-ready.
      */
     private static void startConfig(Vertx vertx, Map<String, String> env, SnapshotCompiler compiler,
+            Consumer<Snapshot> published,
             SnapshotHolder snapshots, Readiness readiness, long startedNanos) {
         String file = env.get("GW_CONFIG_FILE");
         boolean hasFile = file != null && !file.isBlank();
@@ -109,7 +135,7 @@ public final class GatewayMain {
             return;
         }
         if (EtcdEnv.configured(env)) {
-            startEtcd(vertx, env, compiler, snapshots, readiness, startedNanos);
+            startEtcd(vertx, env, compiler, published, snapshots, readiness, startedNanos);
             return;
         }
         if (!hasFile) {
@@ -120,7 +146,7 @@ public final class GatewayMain {
         Duration poll = Duration.ofMillis(pollMillis(env));
         FileConfigSource source = new FileConfigSource(vertx, Path.of(file), compiler, snapshots,
                 s -> {
-                    compiler.services().published(s.resources());
+                    published.accept(s);
                     readiness.markReady();
                 });
         source.load()
@@ -134,6 +160,7 @@ public final class GatewayMain {
     }
 
     private static void startEtcd(Vertx vertx, Map<String, String> env, SnapshotCompiler compiler,
+            Consumer<Snapshot> published,
             SnapshotHolder snapshots, Readiness readiness, long startedNanos) {
         ConfigWorker.Settings settings;
         try {
@@ -152,7 +179,7 @@ public final class GatewayMain {
         }
         AtomicBoolean first = new AtomicBoolean(true);
         ConfigWorker worker = new ConfigWorker(settings, compiler, snapshots, s -> {
-            compiler.services().published(s.resources());
+            published.accept(s);
             readiness.markReady();
             if (first.compareAndSet(true, false)) {
                 LOG.info("ready revision={} readyMs={}", s.revision(),

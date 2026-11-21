@@ -46,6 +46,16 @@ interface. Return a narrower instance for a narrower config so unconfigured phas
 - `PENDING`: you started async work; call `exchange.resume()` or `respond(...)` later on the same
   event loop.
 
+Other exchange methods (M5):
+- `respond(status, title, headers)`: problem response with extra headers (e.g. `Retry-After`).
+- `respondWith(status, headers, body)`: a plugin-made response (cache hit). Header filters still run.
+- `addResponseHeader(name, value)`: added to whatever response the client gets, including errors.
+- `tapResponse(ResponseTap)`: observe the upstream head and body as they stream; `onEnd` runs before
+  the LOG phase. Buffer only within a cap.
+- `limitRequestBody(maxBytes)`: 413 when the streamed body exceeds the cap.
+- Gateway error responses also pass through `HEADER_FILTER` plugins, so CORS headers reach the browser
+  on 401/429.
+
 A plugin that throws fails only its request (500) in request phases, or is skipped in late phases; the
 error is logged with route ID and request ID.
 
@@ -64,9 +74,15 @@ Any scope may reference a shared config: `{"name": "headers", "configRef": "std-
 
 | Plugin | Phases | Priority | Authenticates |
 |---|---|---|---|
+| `cors` | ACCESS, HEADER_FILTER | 4000 | no |
+| `ip-restriction` | ACCESS | 3000 | no |
+| `request-size-limit` | ACCESS | 2900 | no |
 | `jwt` | ACCESS | 2100 | yes |
 | `key-auth` | ACCESS | 2050 | yes |
 | `authz` | ACCESS | 1000 | no |
+| `rate-limit` | ACCESS | 900 | no |
+| `cache` | BEFORE_PROXY, LOG | 500 | no |
+| `request-transform` | BEFORE_PROXY | 100 | no |
 | `headers` | BEFORE_PROXY, HEADER_FILTER | 0 | no |
 
 ## Built-in: `headers`
@@ -114,3 +130,45 @@ Policies are `policies/authz/{id}`:
 ```
 Any matching deny wins. Without a matching allow, the result is 403 (401 if unauthenticated). Place
 `authz` after an authenticating plugin; it runs at a lower priority in the same phase.
+
+## Built-in: `ip-restriction`
+`{"allow": ["10.0.0.0/8"], "deny": ["10.6.6.0/24"], "status": 403}`. Uses the real client IP
+(`X-Forwarded-For` honoured only from `settings.trustedProxies`). Deny wins; with an `allow` list,
+anything outside it is refused.
+
+## Built-in: `request-size-limit`
+`{"maxBytes": 1048576}`: 413 on a larger `Content-Length` before proxying, or as soon as the
+streamed body passes the cap.
+
+## Built-in: `cors`
+`{"allowOrigins": ["https://app.example.com", "https://*.example.com"], "allowMethods": ["GET",
+"HEAD", "POST"], "allowHeaders": [], "exposeHeaders": [], "allowCredentials": false,
+"maxAgeSeconds": 600}`. Preflights are answered by the gateway (204, never proxied). `https://*.example.com`
+allows any subdomain (not the apex); `*` cannot be combined with credentials. Allowed origins are
+echoed, with `Vary: Origin` (except for `*`).
+
+## Built-in: `request-transform`
+`{"path": {"stripPrefix": "/api", "addPrefix": "/v2"} | {"template": "/items/{id}"}, "query":
+{"remove": [], "rename": {}, "set": {}, "add": {}}, "headers": {"rename": {}}}`. Templates use
+route path params. Header add/remove stays in `headers`.
+
+## Built-in: `rate-limit` (ADR 0018)
+`{"name": "default", "algorithm": "token-bucket" | "fixed-window" | "sliding-window", "limit": 100,
+"windowSeconds": 1, "burst": 100, "key": ["ip"], "mode": "local" | "global", "global": {"failMode":
+"open" | "closed", "timeoutMs": 25, "prefetch": 10, "reserveMs": 1000}, "headers": true}`.
+- `key` parts: `ip`, `consumer`, `credential`, `tenant`, `route`, `header:<name>`; combine them for
+  composite keys. A part unknown for a request falls back to the client IP.
+- 429 with `Retry-After`; `RateLimit-Policy` and `RateLimit` headers when `headers` is on.
+- Global mode needs `GW_REDIS_URL`. Redis down: `open` = this node's local limit, `closed` = 503.
+
+## Built-in: `cache` (ADR 0019)
+`{"ttlSeconds": 0, "maxTtlSeconds": 3600, "staleWhileRevalidateSeconds": 0, "statuses": [200],
+"vary": ["accept"], "query": "all" | "ignore" | ["page"], "maxBodyBytes": 1048576,
+"cacheAuthenticated": false, "tagHeader": "cache-tag", "l2": false, "l2TimeoutMs": 20,
+"lockTimeoutMs": 5000, "statusHeader": true}`.
+- GET only (HEAD served from GET entries). Never stores `Set-Cookie`, `no-store`, `no-cache`,
+  `Vary: *`, or Vary headers not listed in `vary`.
+- Authenticated or `private` responses only with `cacheAuthenticated`, which adds the principal to the
+  key.
+- Concurrent misses coalesce onto one upstream request. `x-cache`: HIT, MISS, STALE, EXPIRED, BYPASS.
+- Purge with `policies/cache-purge/{id}` by route or by tag (from `tagHeader`).

@@ -9,6 +9,7 @@ dependencies {
     api(project(":gateway-core"))
     implementation(libs.slf4j.api)
     implementation(libs.jackson.databind)
+    implementation(libs.caffeine)
     testImplementation(libs.awaitility)
     testRuntimeOnly(project(":gateway-observability"))
 }

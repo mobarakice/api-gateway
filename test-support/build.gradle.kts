@@ -11,8 +11,9 @@ dependencies {
 }
 
 val etcdImage = libs.versions.etcdImage.get()
+val redisImage = libs.versions.redisImage.get()
 tasks.named<ProcessResources>("processResources") {
-    val props = mapOf("etcdImage" to etcdImage)
+    val props = mapOf("etcdImage" to etcdImage, "redisImage" to redisImage)
     inputs.properties(props)
     filesMatching("test-support.properties") { expand(props) }
 }

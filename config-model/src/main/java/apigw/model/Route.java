@@ -14,6 +14,7 @@ import java.util.Map;
  * @param timeouts     overrides the service's timeouts
  * @param plugins      route-level plugin configs (override service and global ones of the same name)
  * @param preserveHost forward the client's Host header instead of the target's host:port
+ * @param retries      null = the service's (or none)
  * @param tenantId     owning tenant; null = not tenant-scoped. A tenant route only serves principals of
  *                     that tenant and needs an authentication plugin (ADR 0016)
  */
@@ -30,6 +31,7 @@ public record Route(
         Timeouts timeouts,
         List<PluginRef> plugins,
         boolean preserveHost,
+        Retries retries,
         String tenantId) {
 
     public Route {

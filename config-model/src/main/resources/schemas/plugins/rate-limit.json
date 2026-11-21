@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://apigw.local/schemas/plugins/rate-limit.json",
+  "title": "rate-limit plugin",
+  "description": "Limits requests per key. local: per gateway process. global: shared through Redis with local pre-fetch; failMode decides what happens when Redis is unavailable (open = this node's local limit applies, closed = 503).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["limit"],
+  "properties": {
+    "name": { "type": "string", "pattern": "^[a-z0-9_-]{1,32}$", "default": "default" },
+    "algorithm": { "enum": ["token-bucket", "fixed-window", "sliding-window"], "default": "token-bucket" },
+    "limit": { "type": "integer", "minimum": 1, "maximum": 100000000 },
+    "windowSeconds": { "type": "integer", "minimum": 1, "maximum": 86400, "default": 1 },
+    "burst": { "type": "integer", "minimum": 1, "maximum": 100000000, "description": "token-bucket capacity; default = limit" },
+    "key": {
+      "type": "array", "minItems": 1, "uniqueItems": true, "default": ["ip"],
+      "items": { "type": "string", "pattern": "^(ip|consumer|credential|tenant|route|header:[!#$%&'*+.^_`|~0-9A-Za-z-]{1,256})$" }
+    },
+    "mode": { "enum": ["local", "global"], "default": "local" },
+    "global": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "failMode": { "enum": ["open", "closed"], "default": "open" },
+        "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 5000, "default": 25 },
+        "prefetch": { "type": "integer", "minimum": 1, "maximum": 10000, "default": 10 },
+        "reserveMs": { "type": "integer", "minimum": 10, "maximum": 60000, "default": 1000 }
+      }
+    },
+    "headers": { "type": "boolean", "default": true }
+  },
+  "allOf": [
+    { "if": { "required": ["burst"] }, "then": { "properties": { "algorithm": { "const": "token-bucket" } } } },
+    { "if": { "required": ["global"] }, "then": { "required": ["mode"], "properties": { "mode": { "const": "global" } } } }
+  ]
+}

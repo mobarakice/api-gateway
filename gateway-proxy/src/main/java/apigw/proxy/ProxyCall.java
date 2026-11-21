@@ -5,6 +5,7 @@ import apigw.core.pipeline.Problems;
 import apigw.core.pipeline.ProxyExchange;
 import apigw.core.snapshot.CompiledUpstream;
 import apigw.core.snapshot.ResolvedTimeouts;
+import apigw.core.snapshot.RetryPolicy;
 import io.vertx.core.MultiMap;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
@@ -16,46 +17,78 @@ import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpServerResponse;
 import io.vertx.core.http.HttpVersion;
 import io.vertx.core.http.RequestOptions;
+import io.vertx.core.net.SocketAddress;
 import io.vertx.core.streams.ReadStream;
+import java.net.InetAddress;
 import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeoutException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * One proxied exchange. Timeouts: connect (per request), first byte (from the end of the request
- * body until response headers), idle (no bytes either way, enforced by the client stream), total
- * (whole exchange, optional). Before response headers are sent a failure becomes a generic
- * 502/503/504; after, the client stream is reset so a truncated body is never mistaken for success.
+ * One proxied exchange, made of one or more attempts (ADR 0017).
+ *
+ * <p>Timeouts: connect and first byte per attempt (first byte runs from the end of the request body to
+ * the response head), idle per attempt (enforced by the client stream), total over all attempts.
+ * Before response headers are sent a failure becomes a generic 502/503/504; after, the client stream is
+ * reset so a truncated body is never mistaken for success.
+ *
+ * <p>Each attempt asks the circuit breaker for a permit, picks an available target (health gate,
+ * excluding the previous target when possible), and reports its outcome to the breaker and the gate.
+ * A failed attempt is retried only if the route's policy allows the method and the failure kind, the
+ * retry budget has room, nothing was sent to the client yet, and — unless it was a connect failure,
+ * where the request body is still unread — the request has no body.
  */
 final class ProxyCall {
 
     private static final Logger LOG = LoggerFactory.getLogger(ProxyCall.class);
 
+    /** Why an attempt failed. */
+    private enum Kind { CONNECT, RESET, TIMEOUT, STATUS, OVERFLOW, DENIED }
+
     private final Vertx vertx;
     private final TargetResolver resolver;
     private final UpstreamState state;
     private final ProxyExchange exchange;
+    private final RetryBudget budget;
+    private final RetryPolicy retries;
+    private final boolean hasBody;
+    private int attempt;
+    /** Bumped when an attempt starts and when it ends: callbacks of a finished attempt see a stale epoch. */
+    private int epoch;
     private int target = -1;
+    private int permit;
+    private long attemptStartMs;
+    private boolean attemptOpen;
+    private boolean bodyStarted;
     private HttpClientRequest upstream;
     private long firstByteTimer = -1;
     private long totalTimer = -1;
+    private long backoffTimer = -1;
     private boolean released;
     private boolean headersReceived;
+    private TapStream tapped;
 
-    ProxyCall(Vertx vertx, TargetResolver resolver, UpstreamState state, ProxyExchange exchange) {
+    ProxyCall(Vertx vertx, TargetResolver resolver, UpstreamState state, ProxyExchange exchange, RetryBudget budget) {
         this.vertx = vertx;
         this.resolver = resolver;
         this.state = state;
         this.exchange = exchange;
+        this.budget = budget;
+        this.retries = exchange.route().retries();
+        HttpServerRequest req = exchange.request();
+        String cl = req.getHeader("content-length");
+        this.hasBody = cl != null ? !"0".equals(cl.trim())
+                : req.version() == HttpVersion.HTTP_2 ? !req.isEnded() : req.headers().contains("transfer-encoding");
+    }
+
+    private static long nowMs() {
+        return System.nanoTime() / 1_000_000L;
     }
 
     void start() {
-        HttpServerRequest req = exchange.request();
         ResolvedTimeouts to = exchange.route().timeouts();
-        target = state.balancer.pick(exchange, state.inflight);
-        state.inflight[target]++;
-        CompiledUpstream.Target t = state.definition.targets().get(target);
         if (to.totalMs() > 0) {
             totalTimer = vertx.setTimer(to.totalMs(), id -> {
                 totalTimer = -1;
@@ -63,26 +96,58 @@ final class ProxyCall {
             });
         }
         exchange.onAbort(this::clientGone);
-        if (t.literal()) {
-            // Literal targets were checked against the SSRF rules when the snapshot compiled.
-            connect(req, to, t, null);
+        if (budget != null) {
+            budget.onRequest(nowMs());
+        }
+        attemptStart();
+    }
+
+    private void attemptStart() {
+        backoffTimer = -1;
+        if (released) {
             return;
         }
+        long now = nowMs();
+        if (state.breaker != null) {
+            permit = state.breaker.tryAcquire(now);
+            if (permit == CircuitBreaker.REJECTED) {
+                LOG.debug("circuit open route={} requestId={} upstream={}", exchange.route().id(),
+                        exchange.requestId(), state.definition.id());
+                finish(503);
+                return;
+            }
+        }
+        target = state.pick(exchange, attempt == 0 ? -1 : target, now);
+        state.inflight[target]++;
+        epoch++;
+        attemptOpen = true;
+        attemptStartMs = now;
+        headersReceived = false;
+        upstream = null;
+        CompiledUpstream.Target t = state.definition.targets().get(target);
+        if (t.literal()) {
+            // Literal targets were checked against the SSRF rules when the snapshot compiled.
+            connect(t, null);
+            return;
+        }
+        int thisAttempt = epoch;
         resolver.resolve(t.host(), exchange.snapshot().settings().upstreamAllow()).onComplete(ar -> {
-            if (released) {
+            if (released || epoch != thisAttempt) {
                 return;
             }
             if (ar.failed()) {
-                failed(ar.cause());
+                attemptFailed(ar.cause() instanceof TargetResolver.DeniedAddressException ? Kind.DENIED
+                        : Kind.CONNECT, ar.cause());
                 return;
             }
-            connect(req, to, t, ar.result());
+            connect(t, ar.result());
         });
     }
 
     /** Connects to {@code address} (the checked IP) when given, keeping the name for Host and SNI. */
-    private void connect(HttpServerRequest req, ResolvedTimeouts to, CompiledUpstream.Target t,
-            java.net.InetAddress address) {
+    private void connect(CompiledUpstream.Target t, InetAddress address) {
+        HttpServerRequest req = exchange.request();
+        ResolvedTimeouts to = exchange.route().timeouts();
         RequestOptions options = new RequestOptions()
                 .setMethod(req.method())
                 .setHost(t.host())
@@ -93,11 +158,19 @@ final class ProxyCall {
                 .setIdleTimeout(to.idleMs())
                 .setFollowRedirects(false);
         if (address != null) {
-            options.setServer(io.vertx.core.net.SocketAddress.inetSocketAddress(t.port(), address.getHostAddress()));
+            options.setServer(SocketAddress.inetSocketAddress(t.port(), address.getHostAddress()));
         }
+        int thisAttempt = epoch;
         state.client.request(options).onComplete(ar -> {
+            if (epoch != thisAttempt) {
+                if (ar.succeeded()) {
+                    ar.result().reset();
+                }
+                return;
+            }
             if (ar.failed()) {
-                failed(ar.cause());
+                attemptFailed(ar.cause() instanceof ConnectionPoolTooBusyException ? Kind.OVERFLOW : Kind.CONNECT,
+                        ar.cause());
                 return;
             }
             upstream = ar.result();
@@ -105,55 +178,91 @@ final class ProxyCall {
                 upstream.reset();
                 return;
             }
-            send(req, to);
+            send(req, to, thisAttempt);
         });
     }
 
-    private void send(HttpServerRequest req, ResolvedTimeouts to) {
+    private void send(HttpServerRequest req, ResolvedTimeouts to, int thisAttempt) {
         if (exchange.route().preserveHost() && req.authority() != null) {
             upstream.authority(req.authority());
         }
-        ReadStream<Buffer> body = req;
-        if (!req.headers().contains("content-length")) {
-            boolean mayHaveBody = req.version() == HttpVersion.HTTP_2 ? !req.isEnded()
-                    : req.headers().contains("transfer-encoding");
-            if (mayHaveBody) {
-                if (upstream.version() != HttpVersion.HTTP_2) {
-                    upstream.setChunked(true);
+        HttpClientRequest current = upstream;
+        current.response().onComplete(rr -> {
+            if (epoch != thisAttempt || released) {
+                if (rr.succeeded()) {
+                    current.reset();
                 }
-                body = new LimitedBody(req, exchange.snapshot().settings().maxRequestBodyBytes(), this::tooLarge);
+                return;
             }
-        }
-        upstream.response().onComplete(rr -> {
             cancelFirstByte();
             if (rr.failed()) {
-                failed(rr.cause());
+                attemptFailed(rr.cause() instanceof TimeoutException ? Kind.TIMEOUT : Kind.RESET, rr.cause());
             } else {
                 headersReceived = true;
-                respond(rr.result());
+                onResponse(rr.result());
             }
         });
-        body.pipeTo(upstream).onComplete(pr -> {
-            if (pr.failed()) {
-                failed(pr.cause());
-            } else if (!headersReceived && !released) {
-                firstByteTimer = vertx.setTimer(to.firstByteMs(), id -> {
-                    firstByteTimer = -1;
-                    timeout("first-byte");
-                });
-            }
-        });
-    }
-
-    private void respond(HttpClientResponse resp) {
-        if (released) {
+        if (!hasBody) {
+            // Nothing to stream: end the upstream request now (also what makes a later retry possible),
+            // and let the paused server request deliver its end so keep-alive proceeds.
+            req.resume();
+            current.end().onComplete(er -> afterBody(er.succeeded(), er.cause(), to, thisAttempt));
             return;
         }
+        ReadStream<Buffer> body = req;
+        if (!req.headers().contains("content-length")) {
+            if (current.version() != HttpVersion.HTTP_2) {
+                current.setChunked(true);
+            }
+            body = new LimitedBody(req, exchange.requestBodyLimit(), this::tooLarge);
+        }
+        bodyStarted = true;
+        body.pipeTo(current).onComplete(pr -> afterBody(pr.succeeded(), pr.cause(), to, thisAttempt));
+    }
+
+    private void afterBody(boolean ok, Throwable cause, ResolvedTimeouts to, int thisAttempt) {
+        if (epoch != thisAttempt || released) {
+            return;
+        }
+        if (!ok) {
+            attemptFailed(Kind.RESET, cause);
+        } else if (!headersReceived) {
+            firstByteTimer = vertx.setTimer(to.firstByteMs(), id -> {
+                firstByteTimer = -1;
+                if (epoch == thisAttempt) {
+                    attemptFailed(Kind.TIMEOUT, new TimeoutException("first-byte"));
+                }
+            });
+        }
+    }
+
+    private void onResponse(HttpClientResponse resp) {
         int status = resp.statusCode();
+        long elapsed = nowMs() - attemptStartMs;
+        boolean breakerFailure = state.breaker != null && state.breaker.isFailureStatus(status);
+        boolean targetFailure = status == 502 || status == 503 || status == 504;
+        record(breakerFailure, targetFailure, elapsed);
+        if (retries.onStatus(status) && mayRetry(Kind.STATUS)) {
+            LOG.debug("retrying route={} requestId={} upstream={} attempt={} status={}", exchange.route().id(),
+                    exchange.requestId(), state.definition.id(), attempt + 1, status);
+            endAttempt();
+            resp.request().reset();
+            scheduleRetry();
+            return;
+        }
+        respond(resp, status);
+    }
+
+    private void respond(HttpClientResponse resp, int status) {
         MultiMap headers = Headers.forwardable(resp.headers(), Set.of());
+        apigw.core.plugin.ResponseTap tap = exchange.responseTap();
+        boolean observe = tap != null && tap.onHead(status, headers);
         if (!exchange.beginResponse(status, headers)) {
-            upstream.reset();
+            if (observe) {
+                tap.onAbort();
+            }
             release();
+            upstream.reset();
             return;
         }
         HttpServerRequest req = exchange.request();
@@ -165,9 +274,21 @@ final class ProxyCall {
         if (!bodyless && req.version() != HttpVersion.HTTP_2 && !headers.contains("content-length")) {
             out.setChunked(true);
         }
+        ReadStream<Buffer> body = resp;
+        if (observe) {
+            tapped = new TapStream(resp, tap);
+            body = tapped;
+        }
         // send() pipes with backpressure: upstream reads pause while the client socket is not writable.
-        out.send(resp).onComplete(ar -> {
-            release();
+        out.send(body).onComplete(ar -> {
+            if (tapped != null) {
+                if (ar.succeeded()) {
+                    tapped.completed();
+                } else {
+                    tapped.abort();
+                }
+            }
+            complete(ar.succeeded());
             if (ar.failed() && !exchange.finished()) {
                 LOG.debug("response stream failed route={} requestId={} cause={}", exchange.route().id(),
                         exchange.requestId(), ar.cause().getClass().getSimpleName());
@@ -176,66 +297,130 @@ final class ProxyCall {
         });
     }
 
-    private void failed(Throwable cause) {
+    /** Reports an attempt's result to the breaker and the target gate (once per attempt). */
+    private void record(boolean breakerFailure, boolean targetFailure, long elapsedMs) {
+        long now = nowMs();
+        if (state.breaker != null && permit != CircuitBreaker.REJECTED) {
+            state.breaker.onResult(permit, breakerFailure, state.breaker.isSlow(elapsedMs), now);
+            permit = CircuitBreaker.REJECTED;
+        }
+        if (state.gate != null) {
+            if (targetFailure) {
+                state.gate.onFailure(target, now);
+            } else {
+                state.gate.onSuccess(target);
+            }
+        }
+    }
+
+    private void attemptFailed(Kind kind, Throwable cause) {
         if (released) {
             return;
         }
-        release();
-        int code;
-        if (cause instanceof TargetResolver.DeniedAddressException) {
-            // SSRF rule: never connect. The client only sees a generic 502.
-            LOG.warn("upstream address denied route={} requestId={} upstream={}", exchange.route().id(),
-                    exchange.requestId(), state.definition.id());
-            exchange.respond(502, Problems.title(502));
-            return;
-        } else if (cause instanceof ConnectionPoolTooBusyException) {
-            code = 503;
-        } else if (cause instanceof TimeoutException) {
-            code = 504;
+        if (kind == Kind.OVERFLOW || kind == Kind.DENIED) {
+            // Local pool overflow and SSRF denials say nothing about the target's health.
+            if (state.breaker != null) {
+                state.breaker.release(permit);
+                permit = CircuitBreaker.REJECTED;
+            }
         } else {
-            code = 502;
+            record(true, true, nowMs() - attemptStartMs);
         }
-        LOG.warn("upstream failed route={} requestId={} upstream={} status={} cause={}: {}", exchange.route().id(),
-                exchange.requestId(), state.definition.id(), code, cause.getClass().getSimpleName(),
-                cause.getMessage());
+        endAttempt();
         if (upstream != null) {
             upstream.reset();
         }
-        exchange.respond(code, Problems.title(code));
+        if (kind != Kind.DENIED && kind != Kind.OVERFLOW && mayRetry(kind)) {
+            LOG.debug("retrying route={} requestId={} upstream={} attempt={} kind={}", exchange.route().id(),
+                    exchange.requestId(), state.definition.id(), attempt + 1, kind);
+            scheduleRetry();
+            return;
+        }
+        if (kind == Kind.DENIED) {
+            // SSRF rule: never connect. The client only sees a generic 502.
+            LOG.warn("upstream address denied route={} requestId={} upstream={}", exchange.route().id(),
+                    exchange.requestId(), state.definition.id());
+            finish(502);
+            return;
+        }
+        int code = switch (kind) {
+            case OVERFLOW -> 503;
+            case TIMEOUT -> 504;
+            default -> 502;
+        };
+        LOG.warn("upstream failed route={} requestId={} upstream={} status={} attempts={} cause={}: {}",
+                exchange.route().id(), exchange.requestId(), state.definition.id(), code, attempt + 1,
+                cause.getClass().getSimpleName(), cause.getMessage());
+        finish(code);
+    }
+
+    private boolean mayRetry(Kind kind) {
+        if (attempt >= retries.attempts() || exchange.finished()
+                || !retries.allows(exchange.request().method().name())) {
+            return false;
+        }
+        boolean bodySafe = !hasBody || !bodyStarted;
+        boolean allowed = switch (kind) {
+            case CONNECT -> retries.onConnectFailure();
+            case RESET -> retries.onReset() && bodySafe;
+            case TIMEOUT -> retries.onTimeout() && bodySafe;
+            case STATUS -> bodySafe;
+            default -> false;
+        };
+        return allowed && budget != null
+                && budget.tryRetry(nowMs(), retries.budgetPercent(), retries.minRetriesPerSecond());
+    }
+
+    private void scheduleRetry() {
+        attempt++;
+        int cap = (int) Math.min(retries.maxBackoffMs(), (long) retries.backoffMs() << Math.min(attempt - 1, 20));
+        int delay = cap <= 0 ? 0 : ThreadLocalRandom.current().nextInt(cap + 1);
+        if (delay == 0) {
+            vertx.runOnContext(v -> attemptStart());
+        } else {
+            backoffTimer = vertx.setTimer(delay, id -> attemptStart());
+        }
     }
 
     private void timeout(String which) {
         if (released) {
             return;
         }
-        release();
         LOG.warn("upstream timeout route={} requestId={} upstream={} timeout={}", exchange.route().id(),
                 exchange.requestId(), state.definition.id(), which);
-        if (upstream != null) {
-            upstream.reset();
+        if (attemptOpen) {
+            record(true, true, nowMs() - attemptStartMs);
         }
-        exchange.respond(504, Problems.title(504));
+        finish(504);
     }
 
     private void tooLarge() {
         if (released) {
             return;
         }
-        release();
-        if (upstream != null) {
-            upstream.reset();
-        }
-        exchange.respond(413, Problems.title(413));
+        abandonPermit();
+        finish(413);
     }
 
     private void clientGone() {
         if (released) {
             return;
         }
+        abandonPermit();
         release();
-        if (upstream != null) {
-            upstream.reset();
+    }
+
+    private void abandonPermit() {
+        if (state.breaker != null && permit != CircuitBreaker.REJECTED) {
+            state.breaker.release(permit);
+            permit = CircuitBreaker.REJECTED;
         }
+    }
+
+    /** Ends the exchange with a generic error (resetting any open upstream stream first). */
+    private void finish(int code) {
+        release();
+        exchange.respond(code, Problems.title(code));
     }
 
     private void cancelFirstByte() {
@@ -245,16 +430,56 @@ final class ProxyCall {
         }
     }
 
+    private void endAttempt() {
+        if (!attemptOpen) {
+            return;
+        }
+        attemptOpen = false;
+        epoch++;
+        state.inflight[target]--;
+        cancelFirstByte();
+    }
+
+    /** The response stream ended (normally, or failed on its own): nothing to reset. */
+    private void complete(boolean ok) {
+        if (!ok && !released && upstream != null) {
+            HttpClientRequest open = upstream;
+            stop();
+            open.reset();
+            return;
+        }
+        stop();
+    }
+
+    /** Abandons the exchange (timeout, size cap, client gone, error): resets an open upstream stream. */
     private void release() {
         if (released) {
             return;
         }
+        HttpClientRequest open = attemptOpen ? upstream : null;
+        stop();
+        if (open != null) {
+            open.reset();
+        }
+    }
+
+    private void stop() {
+        if (released) {
+            return;
+        }
         released = true;
-        state.inflight[target]--;
-        cancelFirstByte();
+        if (tapped != null) {
+            // No-op after completed(); otherwise the body never fully reached the client.
+            tapped.abort();
+        }
+        endAttempt();
         if (totalTimer >= 0) {
             vertx.cancelTimer(totalTimer);
             totalTimer = -1;
+        }
+        if (backoffTimer >= 0) {
+            vertx.cancelTimer(backoffTimer);
+            backoffTimer = -1;
         }
     }
 }

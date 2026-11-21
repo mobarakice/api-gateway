@@ -23,18 +23,20 @@ final class TrafficVerticle extends VerticleBase {
     private final BootstrapConfig config;
     private final ListenerPorts ports;
     private final SnapshotHolder snapshots;
+    private final Upstreams upstreams;
     private final List<HttpServer> servers = new ArrayList<>(2);
     private HttpForwarder forwarder;
 
-    TrafficVerticle(BootstrapConfig config, ListenerPorts ports, SnapshotHolder snapshots) {
+    TrafficVerticle(BootstrapConfig config, ListenerPorts ports, SnapshotHolder snapshots, Upstreams upstreams) {
         this.config = config;
         this.ports = ports;
         this.snapshots = snapshots;
+        this.upstreams = upstreams;
     }
 
     @Override
     public Future<?> start() {
-        forwarder = new HttpForwarder(vertx);
+        forwarder = new HttpForwarder(vertx, upstreams.resolver(), upstreams.health());
         Pipeline handler = new Pipeline(snapshots, forwarder);
         HttpServer plain = vertx.createHttpServer(baseOptions(config.httpPort())
                 .setHttp2ClearTextEnabled(true))

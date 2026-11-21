@@ -30,8 +30,15 @@ public final class GatewayServer {
     private final List<String> deployments = new ArrayList<>();
     private final AtomicBoolean stopping = new AtomicBoolean();
     private HttpServer statusServer;
+    private final Upstreams upstreams;
 
     GatewayServer(Vertx vertx, BootstrapConfig config, Readiness readiness, SnapshotHolder snapshots) {
+        this(vertx, config, readiness, snapshots, Upstreams.create(vertx));
+    }
+
+    GatewayServer(Vertx vertx, BootstrapConfig config, Readiness readiness, SnapshotHolder snapshots,
+            Upstreams upstreams) {
+        this.upstreams = Objects.requireNonNull(upstreams);
         this.vertx = Objects.requireNonNull(vertx);
         this.config = Objects.requireNonNull(config);
         this.readiness = Objects.requireNonNull(readiness);
@@ -72,7 +79,7 @@ public final class GatewayServer {
         DeploymentOptions options = new DeploymentOptions()
                 .setInstances(instances)
                 .setThreadingModel(ThreadingModel.EVENT_LOOP);
-        return vertx.deployVerticle(() -> new TrafficVerticle(cfg, ports, snapshots), options)
+        return vertx.deployVerticle(() -> new TrafficVerticle(cfg, ports, snapshots, upstreams), options)
                 .onSuccess(id -> {
                     synchronized (deployments) {
                         deployments.add(id);
