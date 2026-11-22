@@ -90,6 +90,10 @@ final class LogSink {
         return dropped.get();
     }
 
+    int size() {
+        return queue.size();
+    }
+
     private void drainLoop() {
         List<String> batch = new ArrayList<>(BATCH);
         long reportedDrops = 0;

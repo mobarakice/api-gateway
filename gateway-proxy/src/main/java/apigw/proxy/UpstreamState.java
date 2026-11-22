@@ -24,6 +24,8 @@ final class UpstreamState implements Balancer.Availability {
     final int[] inflight;
     /** Null when the upstream has no circuit breaker. */
     final CircuitBreaker breaker;
+    /** The breaker is open or half-open; readable from the metrics scrape thread. */
+    final BreakerFlag breakerOpen = new BreakerFlag();
     /** Null when the upstream has neither active nor passive health checks. */
     final TargetGate gate;
     private long pickNowMs;
@@ -35,7 +37,7 @@ final class UpstreamState implements Balancer.Availability {
         this.balancer = Balancer.of(definition);
         this.inflight = new int[definition.targets().size()];
         this.breaker = definition.circuitBreaker() == null ? null
-                : new CircuitBreaker(definition.id(), definition.circuitBreaker());
+                : new CircuitBreaker(definition.id(), definition.circuitBreaker(), breakerOpen::set);
         this.gate = definition.gated() ? new TargetGate(definition.id(), definition.targets().size(),
                 health == null ? null : health.health(definition), definition.healthCheck().passive()) : null;
         PoolOptions pool = new PoolOptions()

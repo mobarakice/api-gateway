@@ -31,6 +31,8 @@ public final class GatewayServer {
     private final AtomicBoolean stopping = new AtomicBoolean();
     private HttpServer statusServer;
     private final Upstreams upstreams;
+    private final Observability observability;
+    private final Connections connections;
 
     GatewayServer(Vertx vertx, BootstrapConfig config, Readiness readiness, SnapshotHolder snapshots) {
         this(vertx, config, readiness, snapshots, Upstreams.create(vertx));
@@ -38,6 +40,14 @@ public final class GatewayServer {
 
     GatewayServer(Vertx vertx, BootstrapConfig config, Readiness readiness, SnapshotHolder snapshots,
             Upstreams upstreams) {
+        this(vertx, config, readiness, snapshots, upstreams, Observability.none());
+    }
+
+    GatewayServer(Vertx vertx, BootstrapConfig config, Readiness readiness, SnapshotHolder snapshots,
+            Upstreams upstreams, Observability observability) {
+        this.observability = Objects.requireNonNull(observability);
+        this.connections = new Connections(observability.metrics());
+        UpstreamGauges.register(observability.metrics(), upstreams);
         this.upstreams = Objects.requireNonNull(upstreams);
         this.vertx = Objects.requireNonNull(vertx);
         this.config = Objects.requireNonNull(config);
@@ -50,7 +60,7 @@ public final class GatewayServer {
         statusServer = vertx.createHttpServer(new HttpServerOptions()
                 .setHost(config.bindHost())
                 .setPort(config.statusPort()))
-                .requestHandler(new StatusHandler(readiness));
+                .requestHandler(new StatusHandler(readiness, observability.metrics(), vertx));
         return statusServer.listen()
                 .onSuccess(s -> ports.status(s.actualPort()))
                 .compose(s -> {
@@ -79,7 +89,8 @@ public final class GatewayServer {
         DeploymentOptions options = new DeploymentOptions()
                 .setInstances(instances)
                 .setThreadingModel(ThreadingModel.EVENT_LOOP);
-        return vertx.deployVerticle(() -> new TrafficVerticle(cfg, ports, snapshots, upstreams), options)
+        return vertx.deployVerticle(() -> new TrafficVerticle(cfg, ports, snapshots, upstreams, observability,
+                connections), options)
                 .onSuccess(id -> {
                     synchronized (deployments) {
                         deployments.add(id);

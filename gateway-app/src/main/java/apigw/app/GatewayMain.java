@@ -1,5 +1,13 @@
 package apigw.app;
 
+import apigw.app.telemetry.GatewayTelemetry;
+import apigw.app.telemetry.TelemetryConfig;
+import apigw.config.worker.ConfigMetrics;
+import apigw.core.observe.RouteTelemetryFactory;
+import apigw.observability.metrics.MetricRegistry;
+import apigw.observability.metrics.ProcessMetrics;
+import apigw.observability.tracing.OtlpHttpExporter;
+import apigw.observability.tracing.Tracer;
 import apigw.config.etcd.EtcdCheckCommand;
 import apigw.config.etcd.EtcdEnv;
 import apigw.config.file.FileConfigSource;
@@ -50,7 +58,7 @@ public final class GatewayMain {
 
     private static final Logger LOG = LoggerFactory.getLogger(GatewayMain.class);
     /** Reported in the node heartbeat. */
-    static final String BUILD_VERSION = "0.3.0-m3";
+    static final String BUILD_VERSION = "0.8.0-m8";
 
     private GatewayMain() {
     }
@@ -73,8 +81,10 @@ public final class GatewayMain {
         Optional<RedisClient.Settings> redisSettings;
         long cacheBytes;
         long rateLimitKeys;
+        TelemetryConfig telemetryConfig;
         try {
             config = BootstrapConfig.fromEnvironment(env);
+            telemetryConfig = TelemetryConfig.fromEnvironment(env, gatewayId(env), BUILD_VERSION);
             redisSettings = RedisEnv.settings(env);
             cacheBytes = RedisEnv.number(env, "GW_CACHE_MAX_BYTES", 64L << 20);
             rateLimitKeys = RedisEnv.number(env, "GW_RATELIMIT_MAX_KEYS", 200_000);
@@ -94,26 +104,41 @@ public final class GatewayMain {
         if (redis == null) {
             LOG.info("GW_REDIS_URL not set: global rate limits use their fail mode; cache L2 disabled");
         }
+        // Metrics, access log and tracing (ADR 0023). Route meters are compiled into each route.
+        MetricRegistry metrics = new MetricRegistry();
+        ProcessMetrics.register(metrics, "gateway", BUILD_VERSION);
+        OtlpHttpExporter exporter = telemetryConfig.tracing().map(t -> new OtlpHttpExporter(t, metrics)).orElse(null);
+        Tracer tracer = exporter == null ? null : new Tracer(telemetryConfig.tracing().orElseThrow(), exporter);
+        telemetryConfig.tracing().ifPresentOrElse(
+                t -> LOG.info("tracing on endpoint={} sampleRatio={} respectParent={}", t.tracesUri(), t.ratio(),
+                        t.respectParent()),
+                () -> LOG.info("tracing off (GW_TRACING_ENDPOINT not set); inbound trace context passes through"));
+        GatewayTelemetry telemetry = new GatewayTelemetry(metrics, telemetryConfig.accessLog(), tracer);
+        ResponseCache cache = new ResponseCache(cacheBytes, redis);
         PluginServices services = new PluginServices(Map.of(
                 OidcKeySources.class, new OidcKeySources(vertx, Duration.ofSeconds(5)),
                 RateLimitStore.class, new RateLimitStore(rateLimitKeys, redis),
-                ResponseCache.class, new ResponseCache(cacheBytes, redis)));
+                ResponseCache.class, cache,
+                RouteTelemetryFactory.class, telemetry));
+        RuntimeGauges.register(metrics, snapshots, readiness, cache, redis);
         SnapshotCompiler compiler = new SnapshotCompiler(BuiltinPlugins.registry(), services, Clock.systemUTC());
         // Process-wide upstream services: SSRF-checked DNS and active health probes (ADR 0015, 0017).
         Upstreams upstreams = Upstreams.create(vertx);
-        GatewayServer server = new GatewayServer(vertx, config, readiness, snapshots, upstreams);
+        GatewayServer server = new GatewayServer(vertx, config, readiness, snapshots, upstreams,
+                new Observability(metrics, telemetry));
         // After every publish: plugin services and health probes follow the new snapshot.
         Consumer<Snapshot> published = s -> {
             compiler.services().published(s.resources());
             upstreams.health().sync(s);
         };
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> shutdown(vertx, server, config.shutdownGrace()),
-                "gateway-shutdown"));
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> shutdown(vertx, server, config.shutdownGrace(),
+                exporter), "gateway-shutdown"));
         server.start()
                 .onSuccess(v -> LOG.info("gateway listening http={} https={} status={} eventLoops={} startupMs={}",
                         server.httpPort(), server.httpsPort(), server.statusPort(), config.eventLoops(),
                         TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos)))
-                .onSuccess(v -> startConfig(vertx, env, compiler, published, snapshots, readiness, startedNanos))
+                .onSuccess(v -> startConfig(vertx, env, compiler, published, snapshots, readiness, startedNanos,
+                        metrics))
                 .onFailure(e -> {
                     LOG.error("gateway failed to start: {}", e.toString());
                     vertx.close().onComplete(ignored -> System.exit(1));
@@ -126,7 +151,7 @@ public final class GatewayMain {
      */
     private static void startConfig(Vertx vertx, Map<String, String> env, SnapshotCompiler compiler,
             Consumer<Snapshot> published,
-            SnapshotHolder snapshots, Readiness readiness, long startedNanos) {
+            SnapshotHolder snapshots, Readiness readiness, long startedNanos, MetricRegistry metrics) {
         String file = env.get("GW_CONFIG_FILE");
         boolean hasFile = file != null && !file.isBlank();
         if (hasFile && EtcdEnv.configured(env)) {
@@ -135,7 +160,7 @@ public final class GatewayMain {
             return;
         }
         if (EtcdEnv.configured(env)) {
-            startEtcd(vertx, env, compiler, published, snapshots, readiness, startedNanos);
+            startEtcd(vertx, env, compiler, published, snapshots, readiness, startedNanos, metrics);
             return;
         }
         if (!hasFile) {
@@ -161,7 +186,7 @@ public final class GatewayMain {
 
     private static void startEtcd(Vertx vertx, Map<String, String> env, SnapshotCompiler compiler,
             Consumer<Snapshot> published,
-            SnapshotHolder snapshots, Readiness readiness, long startedNanos) {
+            SnapshotHolder snapshots, Readiness readiness, long startedNanos, MetricRegistry metrics) {
         ConfigWorker.Settings settings;
         try {
             long timeoutMs = Long.parseLong(env.getOrDefault("GW_ETCD_TIMEOUT_MS", "5000").trim());
@@ -178,6 +203,7 @@ public final class GatewayMain {
             return;
         }
         AtomicBoolean first = new AtomicBoolean(true);
+        ConfigMetrics configMetrics = new ConfigMetrics(metrics);
         ConfigWorker worker = new ConfigWorker(settings, compiler, snapshots, s -> {
             published.accept(s);
             readiness.markReady();
@@ -185,7 +211,8 @@ public final class GatewayMain {
                 LOG.info("ready revision={} readyMs={}", s.revision(),
                         TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos));
             }
-        });
+        }, configMetrics);
+        configMetrics.bind(worker::status);
         readiness.configStatus(() -> configJson(worker.status(), settings.gatewayId()));
         vertx.deployVerticle(worker, new DeploymentOptions().setThreadingModel(ThreadingModel.WORKER))
                 .onFailure(e -> LOG.error("config worker failed to start: {}", e.toString()));
@@ -237,7 +264,7 @@ public final class GatewayMain {
     }
 
     /** Runs on the JVM shutdown-hook thread (SIGTERM / SIGINT), never on an event loop. */
-    private static void shutdown(Vertx vertx, GatewayServer server, Duration grace) {
+    private static void shutdown(Vertx vertx, GatewayServer server, Duration grace, OtlpHttpExporter exporter) {
         LOG.info("shutdown requested, draining for up to {}s", grace.toSeconds());
         long deadlineMs = grace.toMillis() + 5_000;
         try {
@@ -250,6 +277,9 @@ public final class GatewayMain {
         } catch (ExecutionException | TimeoutException e) {
             LOG.warn("shutdown did not complete cleanly: {}", e.toString());
         } finally {
+            if (exporter != null) {
+                exporter.close(Duration.ofSeconds(2));
+            }
             JsonLogging.flush(Duration.ofSeconds(2));
         }
     }

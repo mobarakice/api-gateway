@@ -29,6 +29,10 @@ import org.slf4j.LoggerFactory;
  */
 public final class RedisClient implements AutoCloseable {
 
+    private final java.util.concurrent.atomic.LongAdder ok = new java.util.concurrent.atomic.LongAdder();
+    private final java.util.concurrent.atomic.LongAdder okNanos = new java.util.concurrent.atomic.LongAdder();
+    private final java.util.concurrent.atomic.LongAdder failed = new java.util.concurrent.atomic.LongAdder();
+
     private static final Logger LOG = LoggerFactory.getLogger(RedisClient.class);
     private static final int MAX_PENDING = 10_000;
     private static final long MIN_BACKOFF_MS = 100;
@@ -114,11 +118,35 @@ public final class RedisClient implements AutoCloseable {
         Buffer frame = encode(args);
         Promise<Reply> p = Promise.promise();
         if (!ready) {
+            failed.increment();
             p.fail(new Unavailable("redis not connected"));
             return p.future();
         }
+        long start = System.nanoTime();
         context.runOnContext(v -> write(frame, p, timeoutMs, false));
-        return p.future();
+        return p.future().andThen(ar -> {
+            if (ar.succeeded()) {
+                ok.increment();
+                okNanos.add(System.nanoTime() - start);
+            } else {
+                failed.increment();
+            }
+        });
+    }
+
+    /** Commands answered since start (metrics). */
+    public long commandsOk() {
+        return ok.sum();
+    }
+
+    /** Total latency of answered commands, nanoseconds (metrics: divide by {@link #commandsOk()}). */
+    public long commandsOkNanos() {
+        return okNanos.sum();
+    }
+
+    /** Commands that failed: not connected, queue full, timeout, connection closed, error reply. */
+    public long commandsFailed() {
+        return failed.sum();
     }
 
     private void write(Buffer frame, Promise<Reply> p, long timeoutMs, boolean handshake) {

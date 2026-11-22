@@ -24,10 +24,15 @@ final class TrafficVerticle extends VerticleBase {
     private final ListenerPorts ports;
     private final SnapshotHolder snapshots;
     private final Upstreams upstreams;
+    private final Observability observability;
+    private final Connections connections;
     private final List<HttpServer> servers = new ArrayList<>(2);
     private HttpForwarder forwarder;
 
-    TrafficVerticle(BootstrapConfig config, ListenerPorts ports, SnapshotHolder snapshots, Upstreams upstreams) {
+    TrafficVerticle(BootstrapConfig config, ListenerPorts ports, SnapshotHolder snapshots, Upstreams upstreams,
+            Observability observability, Connections connections) {
+        this.observability = observability;
+        this.connections = connections;
         this.config = config;
         this.ports = ports;
         this.snapshots = snapshots;
@@ -37,9 +42,11 @@ final class TrafficVerticle extends VerticleBase {
     @Override
     public Future<?> start() {
         forwarder = new HttpForwarder(vertx, upstreams.resolver(), upstreams.health());
-        Pipeline handler = new Pipeline(snapshots, forwarder);
+        upstreams.forwarders().add(forwarder);
+        Pipeline handler = new Pipeline(snapshots, forwarder, observability.requests());
         HttpServer plain = vertx.createHttpServer(baseOptions(config.httpPort())
                 .setHttp2ClearTextEnabled(true))
+                .connectionHandler(connections.listener("http"))
                 .requestHandler(handler);
         servers.add(plain);
         Future<HttpServer> plainListening = plain.listen().map(s -> {
@@ -57,6 +64,7 @@ final class TrafficVerticle extends VerticleBase {
                 .setKeyCertOptions(new PemKeyCertOptions()
                         .setCertPath(tls.certChain().toString())
                         .setKeyPath(tls.privateKey().toString())))
+                .connectionHandler(connections.listener("https"))
                 .requestHandler(handler);
         servers.add(secure);
         Future<HttpServer> secureListening = secure.listen().map(s -> {
@@ -74,7 +82,10 @@ final class TrafficVerticle extends VerticleBase {
             // Stops accepting, lets in-flight requests finish up to the grace period, then closes.
             closing.add(server.shutdown(grace));
         }
-        return Future.all(closing).onComplete(ignored -> forwarder.close());
+        return Future.all(closing).onComplete(ignored -> {
+            upstreams.forwarders().remove(forwarder);
+            forwarder.close();
+        });
     }
 
     private HttpServerOptions baseOptions(int port) {

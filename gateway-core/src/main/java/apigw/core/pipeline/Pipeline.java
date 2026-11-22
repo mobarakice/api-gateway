@@ -1,5 +1,7 @@
 package apigw.core.pipeline;
 
+import apigw.core.observe.RequestTelemetry;
+import apigw.core.observe.Trace;
 import apigw.core.routing.RouteMatch;
 import apigw.core.routing.Router;
 import apigw.core.snapshot.Snapshot;
@@ -18,41 +20,57 @@ public final class Pipeline implements Handler<HttpServerRequest> {
 
     private final SnapshotHolder snapshots;
     private final Forwarder forwarder;
+    private final RequestTelemetry telemetry;
     private final RouteMatch match = new RouteMatch();
 
     public Pipeline(SnapshotHolder snapshots, Forwarder forwarder) {
+        this(snapshots, forwarder, RequestTelemetry.NONE);
+    }
+
+    public Pipeline(SnapshotHolder snapshots, Forwarder forwarder, RequestTelemetry telemetry) {
         this.snapshots = snapshots;
         this.forwarder = forwarder;
+        this.telemetry = telemetry;
     }
 
     @Override
     public void handle(HttpServerRequest request) {
         long start = System.nanoTime();
         String requestId = RequestIds.next();
+        Trace trace = telemetry.begin(request, start);
         Snapshot snapshot = snapshots.current();
         if (snapshot == null) {
-            sendProblem(request, 503, "Service Unavailable", requestId);
+            reject(request, 503, requestId, trace, start);
             return;
         }
         int invalid = RequestValidator.check(request, snapshot.settings().maxRequestBodyBytes());
         if (invalid != 0) {
-            sendProblem(request, invalid, Problems.title(invalid), requestId);
+            reject(request, invalid, requestId, trace, start);
             return;
         }
         String host = host(request);
         if (host == null) {
-            sendProblem(request, 400, "Bad Request", requestId);
+            reject(request, 400, requestId, trace, start);
             return;
         }
         if (!snapshot.router().match(host, request.method().name(), request.path(), request.query(),
                 request.headers(), match)) {
-            sendProblem(request, 404, "Not Found", requestId);
+            reject(request, 404, requestId, trace, start);
             return;
+        }
+        if (trace != null) {
+            trace.route(match.route());
         }
         // The body is read by the forwarder (or a buffering plugin) once the chain admits the request.
         request.pause();
         int[] params = match.paramCount() == 0 ? NO_PARAMS : match.paramOffsets();
-        new ExchangeImpl(request, snapshot, match.route(), params, forwarder, requestId, host, start).run();
+        new ExchangeImpl(request, snapshot, match.route(), params, forwarder, requestId, host, start, telemetry,
+                trace).run();
+    }
+
+    private void reject(HttpServerRequest request, int status, String requestId, Trace trace, long start) {
+        sendProblem(request, status, Problems.title(status), requestId);
+        telemetry.rejected(request, status, requestId, trace, start);
     }
 
     private static final int[] NO_PARAMS = new int[0];

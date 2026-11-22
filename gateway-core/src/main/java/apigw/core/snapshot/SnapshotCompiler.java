@@ -1,5 +1,7 @@
 package apigw.core.snapshot;
 
+import apigw.core.observe.RouteTelemetry;
+import apigw.core.observe.RouteTelemetryFactory;
 import apigw.core.auth.Attributes;
 import apigw.core.auth.CompiledConsumer;
 import apigw.core.auth.SecurityIndex;
@@ -120,6 +122,8 @@ public final class SnapshotCompiler {
                         + "(at route, service or global scope)"));
             }
             CompiledRoute cr = route(r, s, upstreams.get(s.upstreamId()), settings, chain);
+            // Lets the telemetry service drop meters of routes the published snapshot no longer has.
+            ctx.use(cr.telemetry());
             var entry = new RouteTrie.Builder.Entry(cr, r.path(), r.match(), MethodBits.of(r.methods()),
                     r.headers(), r.query(), r.priority());
             if (r.hosts().isEmpty()) {
@@ -286,7 +290,9 @@ public final class SnapshotCompiler {
                 instances(request(plugins, Phase.BEFORE_PROXY), RequestPlugin.class, RequestPlugin[]::new),
                 instances(headerList, ResponseHeadersPlugin.class, ResponseHeadersPlugin[]::new),
                 instances(logList, LogPlugin.class, LogPlugin[]::new),
-                slots(requestList), slots(headerList), slots(logList), r.tenantId());
+                slots(requestList), slots(headerList), slots(logList), r.tenantId(), r.path(),
+                services.find(RouteTelemetryFactory.class).map(f -> f.forRoute(r.id(), u.id()))
+                        .orElse(RouteTelemetry.NONE));
     }
 
     private static List<Resolved> request(List<Resolved> plugins, Phase phase) {

@@ -26,6 +26,9 @@ public interface ProxyExchange extends Exchange {
     /** The request body cap for this exchange (global setting, or lower if a plugin limited it). */
     long requestBodyLimit();
 
+    /** The request's trace, or null when it is not traced. */
+    apigw.core.observe.Trace trace();
+
     /** The tap a plugin registered, or null. */
     apigw.core.plugin.ResponseTap responseTap();
 }

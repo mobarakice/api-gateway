@@ -8,8 +8,6 @@ import org.slf4j.event.Level;
 /** Renders one log event as a single JSON line. */
 final class JsonLines {
 
-    private static final char[] HEX = "0123456789abcdef".toCharArray();
-
     private JsonLines() {
     }
 
@@ -46,30 +44,6 @@ final class JsonLines {
 
     /** Appends {@code s} as a JSON string literal (RFC 8259 escaping). */
     static void string(StringBuilder b, String s) {
-        b.append('"');
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            switch (c) {
-                case '"' -> b.append("\\\"");
-                case '\\' -> b.append("\\\\");
-                case '\n' -> b.append("\\n");
-                case '\r' -> b.append("\\r");
-                case '\t' -> b.append("\\t");
-                default -> {
-                    if (c < 0x20 || c == 0x2028 || c == 0x2029) {
-                        b.append("\\u00").append(HEX[(c >> 4) & 0xF]).append(HEX[c & 0xF]);
-                        if (c >= 0x100) {
-                            // U+2028/2029: rewrite the two bytes written above as a full escape.
-                            b.setLength(b.length() - 6);
-                            b.append("\\u").append(HEX[(c >> 12) & 0xF]).append(HEX[(c >> 8) & 0xF])
-                                    .append(HEX[(c >> 4) & 0xF]).append(HEX[c & 0xF]);
-                        }
-                    } else {
-                        b.append(c);
-                    }
-                }
-            }
-        }
-        b.append('"');
+        apigw.observability.JsonText.string(b, s);
     }
 }

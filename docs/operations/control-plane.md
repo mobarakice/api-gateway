@@ -29,6 +29,7 @@ in etcd (ADR 0020). It is stateless: run 2+ replicas behind a load balancer.
 | `CP_CORS_ORIGINS` | none | exact console origins (`https://console.example.com`), comma-separated; no wildcards, no credentials |
 | `CP_TRUSTED_PROXIES` | none | CIDRs whose `X-Forwarded-For` is honoured for the audit `sourceIp` |
 | `CP_AUDIT_FILE` | none | append-only JSON Lines audit sink (ADR 0021) |
+| `CP_METRICS_PORT` | `9902` | plain-HTTP Prometheus `/metrics` listener on `CP_BIND_HOST`; `0` disables it. Internal only ([observability](observability.md)) |
 | `CP_AUDIT_WINDOW` | `1000` | audit events kept in etcd |
 | `CP_ETCD_MAX_TXN_OPS` | `128` | must match etcd `--max-txn-ops`; a change set holds this − 5 ops |
 | `CP_MAX_TXN_BYTES` | `1000000` | keep below etcd `--max-request-bytes` (1.5 MiB default) |

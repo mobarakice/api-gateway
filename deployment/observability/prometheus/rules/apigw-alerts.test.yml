@@ -1,0 +1,131 @@
+# promtool unit tests for apigw-alerts.yml (run in the observability integration test and by hand:
+#   promtool test rules deployment/observability/prometheus/rules/apigw-alerts.test.yml)
+rule_files:
+  - apigw-alerts.yml
+evaluation_interval: 1m
+
+tests:
+  - name: 5xx ratio above 5% fires after 5 minutes
+    interval: 1m
+    input_series:
+      - series: 'gw_requests_total{job="apigw-gateway",instance="gw-1",route="r",code="2xx"}'
+        values: '0+540x20'
+      - series: 'gw_requests_total{job="apigw-gateway",instance="gw-1",route="r",code="502"}'
+        values: '0+60x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: GatewayHighErrorRate
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: GatewayHighErrorRate
+        exp_alerts:
+          - exp_labels: {severity: critical, job: apigw-gateway}
+            exp_annotations:
+              summary: "More than 5% of gateway responses are 5xx"
+              description: "10% of requests failed with 5xx over the last 5 minutes."
+              runbook: docs/operations/observability.md#gatewayhigherrorrate
+      - eval_time: 12m
+        alertname: GatewayRouteHighErrorRate
+        exp_alerts: []
+
+  - name: healthy traffic does not alert
+    interval: 1m
+    input_series:
+      - series: 'gw_requests_total{job="apigw-gateway",instance="gw-1",route="r",code="2xx"}'
+        values: '0+600x30'
+      - series: 'gw_requests_total{job="apigw-gateway",instance="gw-1",route="r",code="401"}'
+        values: '0+60x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: GatewayHighErrorRate
+        exp_alerts: []
+
+  - name: open breaker
+    interval: 1m
+    input_series:
+      - series: 'gw_upstream_breakers_open{job="apigw-gateway",instance="gw-1",upstream="orders"}'
+        values: '0 0 2 2 2 2'
+      - series: 'gw_upstream_breakers_open{job="apigw-gateway",instance="gw-1",upstream="users"}'
+        values: '0 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: GatewayCircuitBreakerOpen
+        exp_alerts:
+          - exp_labels: {severity: warning, job: apigw-gateway, instance: gw-1, upstream: orders}
+            exp_annotations:
+              summary: "Circuit breaker open for upstream orders"
+              description: "2 event loop(s) on gw-1 reject requests to orders with 503."
+              runbook: docs/operations/observability.md#gatewaycircuitbreakeropen
+
+  - name: a gateway behind the fleet on revision
+    interval: 1m
+    input_series:
+      - series: 'gw_config_published_revision{job="apigw-gateway",instance="gw-1"}'
+        values: '100x10'
+      - series: 'gw_config_applied_revision{job="apigw-gateway",instance="gw-1"}'
+        values: '120x10'
+      - series: 'gw_config_published_revision{job="apigw-gateway",instance="gw-2"}'
+        values: '0x10'
+      - series: 'gw_config_applied_revision{job="apigw-gateway",instance="gw-2"}'
+        values: '90x10'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: GatewayBehindOnRevision
+        exp_alerts:
+          - exp_labels: {severity: warning, job: apigw-gateway, instance: gw-2}
+            exp_annotations:
+              summary: "Gateway gw-2 serves an older config than was published"
+              description: "Its applied revision has been behind the newest publish for 5 minutes."
+              runbook: docs/operations/observability.md#gatewaybehindonrevision
+
+  - name: stale config after etcd is unreachable for 2 minutes
+    interval: 1m
+    input_series:
+      - series: 'gw_config_etcd_last_success_timestamp_seconds{job="apigw-gateway",instance="gw-1"}'
+        values: '60 120 180 180 180 180 180 180 180'
+      - series: 'gw_config_state{job="apigw-gateway",instance="gw-1",state="SERVING_STALE"}'
+        values: '0 0 0 0 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: GatewayConfigStale
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: GatewayConfigStale
+        exp_alerts:
+          - exp_labels: {severity: warning, job: apigw-gateway, instance: gw-1}
+            exp_annotations:
+              summary: "Gateway gw-1 has not reached etcd for over 2 minutes"
+              description: "It keeps serving its current (or last-known-good) snapshot but will not see config changes."
+              runbook: docs/operations/observability.md#gatewayconfigstale
+          - exp_labels: {severity: warning, job: apigw-gateway, instance: gw-1, state: SERVING_STALE}
+            exp_annotations:
+              summary: "Gateway gw-1 has not reached etcd for over 2 minutes"
+              description: "It keeps serving its current (or last-known-good) snapshot but will not see config changes."
+              runbook: docs/operations/observability.md#gatewayconfigstale
+
+  - name: etcd near quota and without leader
+    interval: 1m
+    input_series:
+      - series: 'etcd_mvcc_db_total_size_in_bytes{job="etcd",instance="etcd-0"}'
+        values: '1800000000x15'
+      - series: 'etcd_server_quota_backend_bytes{job="etcd",instance="etcd-0"}'
+        values: '2147483648x15'
+      - series: 'etcd_server_has_leader{job="etcd",instance="etcd-0"}'
+        values: '1 1 0 0 0'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: EtcdDatabaseNearQuota
+        exp_alerts:
+          - exp_labels: {severity: warning, job: etcd, instance: etcd-0}
+            exp_annotations:
+              summary: "etcd database on etcd-0 is 83.82% of its quota"
+              description: "Compact and defragment; at 100% etcd becomes read-only (alarm NOSPACE)."
+              runbook: docs/operations/observability.md#etcddatabasenearquota
+      - eval_time: 4m
+        alertname: EtcdNoLeader
+        exp_alerts:
+          - exp_labels: {severity: critical, job: etcd, instance: etcd-0}
+            exp_annotations:
+              summary: "etcd member etcd-0 has no leader"
+              description: "The cluster has lost quorum or is partitioned."
+              runbook: docs/operations/observability.md#etcdnoleader

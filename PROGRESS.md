@@ -12,7 +12,7 @@ Resume rule: read `CLAUDE.md` and this file, then continue from the last green m
 | M5 | Traffic plugins: rate limit, cache, breaker, retries, health, transforms, CORS, IP rules | done (2026-11-21) |
 | M6 | Control plane | done (2026-11-21) |
 | M7 | Admin console | done (2026-11-21) |
-| M8 | Observability | not started |
+| M8 | Observability | done (2026-11-22) |
 | M9 | Docker, Kubernetes, hardening | not started |
 | M10 | Benchmarks, profiling, JVM vs native report | not started |
 
@@ -513,6 +513,88 @@ Not in M7 (planned later):
   axe plus keyboard-only flows in e2e.
 - Upgrade TypeScript 7, ESLint 10, React Router 8 and jsdom 30+ once typescript-eslint and
   jsx-a11y support them and the toolchain moves to Node ≥ 22.22.
+
+## M8 results (2026-11-22, dev host: macOS arm64, Oracle GraalVM 25.0.4, Docker Desktop; Prometheus v3.16.0, Jaeger 2.23.0, Grafana 13.3.0)
+
+Built (ADR 0023 supersedes 0006: in-house registry and tracer, no new dependencies):
+- **Core SPI `gateway-core/.../observe/`:** `RequestTelemetry`, `RouteTelemetry`, `Trace`, `AttemptOutcome`.
+  - Per-route meters are resolved in `SnapshotCompiler` through `RouteTelemetryFactory`, and pruned on publish
+    (`SnapshotAware.retainOnly`).
+  - `Pipeline`, `ExchangeImpl` and `ProxyCall` report completion, local responses, and every upstream attempt with its outcome.
+- **`gateway-observability`:**
+  - `MetricRegistry`: counters, gauges, histograms, Prometheus text 0.0.4, name/label validation.
+  - `ProcessMetrics`: CPU, RSS, fds, heap, GC, threads, build info.
+  - `LogLine` builder.
+  - Tracing: `TraceParent` (W3C), a parent-based and ratio sampler, SERVER and CLIENT spans, and `OtlpHttpExporter`
+    (OTLP/HTTP JSON over the JDK client, bounded queue, drops counted).
+- **Gateway:**
+  - `/metrics` on the status port. The catalogue is in `docs/operations/observability.md`.
+  - Metrics: requests and latency per route and status, unrouted, local responses (authn/authz 401/403, rate-limit 429),
+    upstream attempts and outcomes, retries and latency, in-flight (pool usage), open breakers,
+    active connections, cache hit/miss/stale/bypass, L1 bytes, Redis commands and connection,
+    log queue and drops, and span export.
+  - Config: applied, etcd and published revisions; publish-to-applied propagation; last etcd success
+    (staleness); resyncs, watch restarts, rejections, worker state; etcd latency and errors per op.
+  - JSON access log (`GW_ACCESS_LOG`) with trace ID, request ID, route, service, upstream, consumer, tenant,
+    method, status and duration.
+- **Control plane:** `CP_METRICS_PORT` (default 9902) serves `cp_http_requests_total` and
+  `cp_http_request_duration_seconds` by a fixed endpoint name, etcd latency and errors, and process metrics.
+- **`deployment/observability/`:** Prometheus scrape config; 3 recording rules and 21 alerts (error rate,
+  p99, pool saturation, breaker open, CPU, heap, log drops, trace export, down/not ready, config stale,
+  config rejected, behind on revision, slow propagation, control plane, etcd down/no leader/leader churn/DB near
+  quota), each with a promtool unit test and a runbook section; the Grafana dashboard (36 panels) and provisioning.
+- **Compose:** adds Prometheus, Grafana (admin password generated into `.local/`) and Jaeger. etcd now
+  exposes `--listen-metrics-urls`, and gateways export traces at a 0.1 sample ratio.
+  - Fixed `init.sh etcd-auth` on re-runs: once auth is enabled, the health probe needs root credentials.
+    A restarted stack used to fail at etcd-auth.
+- **Docs:** ADR 0023, `docs/operations/observability.md` (endpoints, Kubernetes scraping, metric catalogue,
+  logs, tracing, runbooks), `configuration.md` (`GW_ACCESS_LOG`, `GW_TRACING_*`), `control-plane.md`.
+
+Checks:
+- `./gradlew build`: green.
+- `nativeTest`: 187/187 across 7 modules (config 20, observability 22, core 17, proxy 33, plugins 32, app 37, control-plane 26).
+- promtool `check rules` and `test rules` (prom/prometheus:v3.16.0): pass.
+- `ObservabilityIT`, JVM and **native**, against real Prometheus and Jaeger containers:
+  - Prometheus scrapes the gateway (`up == 1`) and reads exact request, 401, 404, upstream and ready values.
+  - All 24 rules report health `ok` against live series, and promtool tests pass inside the container.
+  - All 44 dashboard queries execute (25 return data from the test traffic).
+  - **Trace propagation:** a sampled caller `traceparent` with ratio 0 produces a SERVER span (parent = caller)
+    and a CLIENT span (parent = server) in Jaeger, with `http.route`, route ID and status attributes.
+  - The upstream receives `traceparent` carrying the client span's ID.
+  - Unsampled requests pass through without a gateway-made `traceparent`.
+  - The access log carries `traceId`.
+- `ControlPlaneIT` with metric assertions (7/7, JVM and native):
+  - every gateway records `gw_config_propagation_seconds` for each publish, with a mean of 104–111 ms (native)
+    and 109 ms (JVM). End-to-end publish-to-all-3-gateways measured 124–156 ms;
+  - published revision ≤ applied revision, `gw_config_state{SERVING} == 1`;
+  - the control plane counts the 5 publishes and its etcd txns.
+- The Compose stack runs with all 4 Prometheus targets up (2 gateways, control plane, etcd).
+  - All 24 rules are healthy, and Grafana provisions the "API Gateway" dashboard. The Prometheus datasource health check returns OK.
+  - Jaeger lists the `apigw-gateway` service.
+  - The stack has no routes seeded, so routed panels there stay empty. Routed traffic is covered by `ObservabilityIT`.
+- `TelemetryBenchmark` (JMH, dev host, `-prof gc`):
+  - route meters per request (attempt + completion): 19 ns, 0 B/op; 41 ns with 4 contending threads, 0 B/op;
+  - unsampled inbound `traceparent` parse plus decision: 23 ns, 104 B/op (keeps the trace ID for the access log);
+  - no-parent decision: 1.4 ns, 0 B/op.
+  - These are dev-host numbers, not reference numbers.
+- Full integration suites, JVM and **native** (forced rerun): ConfigWorkerIT 6, ControlPlaneIT 7, EtcdCheckIT 3,
+  EtcdClientIT 7, EtcdClusterIT 3, GatewayProcessIT 3, ObservabilityIT 1, ProxyIT 1, SecurityIT 1 (suite), TrafficIT 4.
+  All green.
+  - Fixed a pre-existing intermittent failure in SecurityIT. The cross-tenant check forbade the substring `cb` in the 403 body,
+    and a random hex request ID can contain `cb` (about 6% of runs). The request ID is now removed before the check; the body
+    is still asserted to be the generic problem.
+
+Not in M8 (planned later or deferred):
+- Auth metrics by reason (bad signature, expired, audience) and JWKS refresh state: today 401/403
+  counts come from `gw_local_responses_total`, and the reasons are in debug logs.
+- Per-plugin latency, and event-loop or worker queue depth, beyond the log and span queues.
+- Exemplars (trace ID on histogram buckets), OTLP gRPC or protobuf, `tracestate` mutation, baggage.
+- Control-plane tracing.
+- Dashboards for the control plane and etcd. The gateway dashboard has config and etcd-health rows; etcd
+  upstream dashboards can be imported as-is.
+- Kubernetes `PodMonitor`/`PrometheusRule` manifests: M9, together with the Kustomize base.
+- Intermittent: `HttpForwarderTest.preserveHostForwardsClientAuthority` failed once (empty body) and then
+  passed 3/3 in isolation and in later full builds. The test dates from M2 and M8 did not touch it; it is tracked for investigation.
 
 ## Known blockers
 

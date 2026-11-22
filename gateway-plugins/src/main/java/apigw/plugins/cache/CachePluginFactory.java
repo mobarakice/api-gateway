@@ -253,6 +253,7 @@ public final class CachePluginFactory implements PluginFactory {
         }
 
         private Outcome serve(Exchange exchange, CachedResponse r, long now, String state) {
+            cache.counted("HIT".equals(state) ? ResponseCache.HIT : ResponseCache.STALE);
             MultiMap h = r.headers();
             h.set("age", Long.toString(Math.max(0, (now - r.storedAtMs()) / 1000)));
             if (statusHeader) {
@@ -271,6 +272,7 @@ public final class CachePluginFactory implements PluginFactory {
         }
 
         private void marker(Exchange exchange, String state) {
+            cache.counted("BYPASS".equals(state) ? ResponseCache.BYPASS : ResponseCache.MISS);
             if (statusHeader) {
                 exchange.addResponseHeader("x-cache", state);
             }

@@ -1,5 +1,8 @@
 package apigw.controlplane;
 
+import apigw.controlplane.metrics.ApiMetrics;
+import apigw.observability.metrics.MetricRegistry;
+import apigw.observability.metrics.ProcessMetrics;
 import apigw.config.etcd.EtcdHttpClient;
 import apigw.controlplane.api.AdminApi;
 import apigw.controlplane.audit.AuditLog;
@@ -42,6 +45,7 @@ public final class ControlPlaneMain {
 
     private static final Logger LOG = LoggerFactory.getLogger(ControlPlaneMain.class);
     private static final long AUDIT_TRIM_MS = 60_000;
+    static final String VERSION = "0.8.0-m8";
 
     private ControlPlaneMain() {
     }
@@ -64,6 +68,15 @@ public final class ControlPlaneMain {
         Vertx vertx = Vertx.vertx(new VertxOptions().setEventLoopPoolSize(2).setPreferNativeTransport(false));
         Clock clock = Clock.systemUTC();
         EtcdHttpClient etcd = EtcdHttpClient.create(vertx, config.etcd());
+        MetricRegistry metrics = new MetricRegistry();
+        ProcessMetrics.register(metrics, "control-plane", VERSION);
+        etcd.observe(ApiMetrics.etcdObserver(metrics));
+        if (config.metricsPort() > 0) {
+            vertx.createHttpServer(new HttpServerOptions().setHost(config.bindHost()).setPort(config.metricsPort()))
+                    .requestHandler(req -> metricsEndpoint(vertx, metrics, req)).listen()
+                    .onSuccess(s -> LOG.info("metrics listening port={} path=/metrics (internal)", s.actualPort()))
+                    .onFailure(e -> LOG.error("metrics listener failed: {}", e.toString()));
+        }
         KvStore kv = new EtcdKvStore(etcd);
         Future<Optional<AuditSink>> sink = config.auditFile().isEmpty() ? Future.succeededFuture(Optional.empty())
                 : FileAuditSink.open(vertx, config.auditFile().get()).map(Optional::of);
@@ -95,7 +108,7 @@ public final class ControlPlaneMain {
             if (!config.corsOrigins().isEmpty()) {
                 LOG.info("CORS origins {}", config.corsOrigins());
             }
-            return vertx.createHttpServer(o).requestHandler(handler).listen();
+            return vertx.createHttpServer(o).requestHandler(new ApiMetrics(metrics, handler)).listen();
         }).onSuccess(s -> {
             server.set(s);
             LOG.info("control plane listening port={} tls={} prefix={} startupMs={}", s.actualPort(),
@@ -106,6 +119,21 @@ public final class ControlPlaneMain {
             exit(1);
         });
         Runtime.getRuntime().addShutdownHook(new Thread(() -> shutdown(vertx, server.get()), "control-plane-shutdown"));
+    }
+
+    /** Internal metrics listener: {@code /metrics} (Prometheus text), rendered off the event loop. */
+    private static void metricsEndpoint(Vertx vertx, MetricRegistry metrics, io.vertx.core.http.HttpServerRequest req) {
+        if (!"/metrics".equals(req.path())) {
+            req.response().setStatusCode(404).end();
+            return;
+        }
+        vertx.executeBlocking(metrics::scrape, false).onComplete(ar -> {
+            if (ar.succeeded()) {
+                req.response().putHeader("content-type", "text/plain; version=0.0.4; charset=utf-8").end(ar.result());
+            } else {
+                req.response().setStatusCode(500).end();
+            }
+        });
     }
 
     /**

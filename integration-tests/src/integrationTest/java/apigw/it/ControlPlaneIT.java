@@ -68,6 +68,7 @@ class ControlPlaneIT {
     private static String base;
     private static Path auditFile;
     private static Path tmp;
+    private static int cpMetricsPort;
 
     @BeforeAll
     static void start() throws Exception {
@@ -87,6 +88,8 @@ class ControlPlaneIT {
                 "CP_ETCD_CA", EtcdGatewaySupport.TLS.resolve("ca.pem").toString(),
                 "CP_ETCD_USER", EtcdTestCluster.CONTROL_PLANE_USER, "CP_ETCD_PASSWORD_FILE", pw.toString(),
                 "CP_ETCD_PREFIX", PREFIX));
+        cpMetricsPort = Ports.free();
+        cpEnv.put("CP_METRICS_PORT", Integer.toString(cpMetricsPort));
         cpEnv.putAll(Map.of("CP_OIDC_ISSUER", ISS, "CP_OIDC_AUDIENCE", "admin-api", "CP_OIDC_ALGORITHMS", "RS256",
                 "CP_OIDC_JWKS_FILE", jwks.toString(), "CP_AUDIT_FILE", auditFile.toString()));
         base = "https://127.0.0.1:" + port + "/admin/v1/";
@@ -253,6 +256,39 @@ class ControlPlaneIT {
                 && System.nanoTime() < deadline);
         assertThat(gws.body().path("items")).hasSize(3);
         assertThat(gws.raw()).doesNotContain("\"behind\":true");
+        // Metrics: each gateway measured publish-to-serve and is not behind the newest publish it saw.
+        HttpClient plain = HttpClient.newHttpClient();
+        for (Gw g : GW_ENVS) {
+            String text = plain.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + g.status() + "/metrics"))
+                    .build(), HttpResponse.BodyHandlers.ofString()).body();
+            Map<String, Double> m = metrics(text);
+            assertThat(m.getOrDefault("gw_config_propagation_seconds_count", 0.0)).as(text).isGreaterThanOrEqualTo(1);
+            assertThat(m.get("gw_config_published_revision")).isPositive()
+                    .isLessThanOrEqualTo(m.get("gw_config_applied_revision"));
+            assertThat(m.get("gw_config_state{state=\"SERVING\"}")).isEqualTo(1.0);
+            assertThat(m.get("gw_etcd_request_seconds_count{op=\"put\"}")).isPositive();
+            System.out.printf("CONFIG-PROPAGATION-METRIC mode=%s gateway-port=%d count=%.0f mean-ms=%.1f%n",
+                    GatewayProcess.mode(), g.status(), m.get("gw_config_propagation_seconds_count"),
+                    1000 * m.get("gw_config_propagation_seconds_sum") / m.get("gw_config_propagation_seconds_count"));
+        }
+        Map<String, Double> cpm = metrics(plain.send(HttpRequest.newBuilder(
+                URI.create("http://127.0.0.1:" + cpMetricsPort + "/metrics")).build(),
+                HttpResponse.BodyHandlers.ofString()).body());
+        assertThat(cpm.get("cp_http_requests_total{endpoint=\"changesets.publish\",method=\"POST\",code=\"2xx\"}"))
+                .isGreaterThanOrEqualTo(5);
+        assertThat(cpm.get("cp_etcd_request_seconds_count{op=\"txn\"}")).isPositive();
+    }
+
+    /** Series name with labels -> value, from Prometheus text. */
+    private static Map<String, Double> metrics(String text) {
+        Map<String, Double> out = new HashMap<>();
+        for (String line : text.split("\n")) {
+            if (!line.startsWith("#") && !line.isBlank()) {
+                int sp = line.lastIndexOf(' ');
+                out.put(line.substring(0, sp), Double.parseDouble(line.substring(sp + 1)));
+            }
+        }
+        return out;
     }
 
     @Test

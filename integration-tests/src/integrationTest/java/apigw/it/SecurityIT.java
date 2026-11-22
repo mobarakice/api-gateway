@@ -242,7 +242,9 @@ class SecurityIT {
             assertThat(get(http, "/tenant-a", "x-api-key", "itkey_a01." + KEY_SECRET).statusCode()).isEqualTo(200);
             HttpResponse<String> cross = get(http, "/tenant-a", "x-api-key", "itkey_b01." + KEY_SECRET_B);
             assertThat(cross.statusCode()).isEqualTo(403);
-            assertThat(cross.body()).doesNotContain("cb", "tenant", KEY_SECRET_B);
+            // The body is the generic problem; the random hex request ID is removed first (it can contain "cb").
+            assertThat(cross.body().replaceAll("\"requestId\":\"[0-9a-f]+\"", ""))
+                    .doesNotContain("cb", "tenant", KEY_SECRET_B);
 
             // Request smuggling, ambiguous framing and oversized headers never reach a plugin or upstream.
             assertThat(raw(http, "POST /keys HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\n"

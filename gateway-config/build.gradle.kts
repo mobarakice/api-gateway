@@ -10,6 +10,6 @@ dependencies {
     api(project(":gateway-core"))
     implementation(libs.jackson.databind)
     implementation(libs.slf4j.api)
+    api(project(":gateway-observability"))
     testImplementation(libs.awaitility)
-    testRuntimeOnly(project(":gateway-observability"))
 }

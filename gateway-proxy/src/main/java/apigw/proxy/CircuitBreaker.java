@@ -32,11 +32,18 @@ final class CircuitBreaker {
     private int totalFailures;
     private int totalSlow;
     private State state = State.CLOSED;
+    /** Told about every transition (true = open or half-open), e.g. to publish the state to metrics. */
+    private final java.util.function.Consumer<Boolean> onChange;
     private long openUntilMs;
     private int trialsInFlight;
     private int trialsSucceeded;
 
     CircuitBreaker(String upstreamId, Upstream.CircuitBreaker spec) {
+        this(upstreamId, spec, open -> { });
+    }
+
+    CircuitBreaker(String upstreamId, Upstream.CircuitBreaker spec, java.util.function.Consumer<Boolean> onChange) {
+        this.onChange = onChange;
         this.upstreamId = upstreamId;
         this.spec = spec;
         this.calls = new int[spec.windowSeconds()];
@@ -148,6 +155,7 @@ final class CircuitBreaker {
     }
 
     private void transition(State to, long nowMs) {
+        onChange.accept(to != State.CLOSED);
         State from = state;
         state = to;
         trialsInFlight = 0;

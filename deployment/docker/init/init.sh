@@ -26,7 +26,7 @@ certs() {
     rm -f "$W/certs/server.csr" "$W/certs/ext.cnf" "$W/certs/ca.srl"
     echo "init: generated dev CA and server certificate"
   fi
-  for s in etcd-root etcd-gateway etcd-control-plane redis-gateway; do
+  for s in etcd-root etcd-gateway etcd-control-plane redis-gateway grafana-admin; do
     [ -s "$W/secrets/$s" ] || pw > "$W/secrets/$s"
   done
   if [ ! -s "$W/e2e/users.json" ]; then
@@ -53,7 +53,8 @@ ctl() { etcdctl --endpoints=https://etcd:2379 --cacert="$W/certs/ca.pem" --comma
 etcd_auth() {
   root=$(cat "$W/secrets/etcd-root")
   i=0
-  until ctl endpoint health >/dev/null 2>&1; do
+  # Once auth is on (a re-run), the health check itself needs credentials.
+  until ctl endpoint health >/dev/null 2>&1 || ctl --user "root:$root" endpoint health >/dev/null 2>&1; do
     i=$((i + 1)); [ "$i" -gt 60 ] && { echo "init: etcd not reachable" >&2; exit 1; }
     sleep 1
   done

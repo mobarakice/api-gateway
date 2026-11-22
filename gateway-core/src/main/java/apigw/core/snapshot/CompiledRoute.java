@@ -1,5 +1,6 @@
 package apigw.core.snapshot;
 
+import apigw.core.observe.RouteTelemetry;
 import apigw.core.plugin.LogPlugin;
 import apigw.core.plugin.RequestPlugin;
 import apigw.core.plugin.ResponseHeadersPlugin;
@@ -29,12 +30,14 @@ public final class CompiledRoute {
     private final int[] headerFilterSlots;
     private final int[] logSlots;
     private final String tenantId;
+    private final String path;
+    private final RouteTelemetry telemetry;
 
     CompiledRoute(String id, String serviceId, CompiledUpstream upstream, ResolvedTimeouts timeouts,
             RetryPolicy retries, boolean preserveHost, List<String> paramNames, RequestPlugin[] rewrite,
             RequestPlugin[] access,
             RequestPlugin[] beforeProxy, ResponseHeadersPlugin[] headerFilter, LogPlugin[] log, int[] requestSlots,
-            int[] headerFilterSlots, int[] logSlots, String tenantId) {
+            int[] headerFilterSlots, int[] logSlots, String tenantId, String path, RouteTelemetry telemetry) {
         this.id = id;
         this.serviceId = serviceId;
         this.upstream = upstream;
@@ -52,6 +55,8 @@ public final class CompiledRoute {
         this.headerFilterSlots = headerFilterSlots;
         this.logSlots = logSlots;
         this.tenantId = tenantId;
+        this.path = path;
+        this.telemetry = telemetry;
         if (requestSlots.length != requestChain.length || headerFilterSlots.length != headerFilter.length
                 || logSlots.length != log.length) {
             throw new IllegalArgumentException("slot arrays must parallel the plugin arrays");
@@ -69,6 +74,16 @@ public final class CompiledRoute {
 
     public int[] logSlots() {
         return logSlots;
+    }
+
+    /** The configured path pattern (e.g. {@code /users/{id}}); for traces, never a metric label. */
+    public String path() {
+        return path;
+    }
+
+    /** This route's meters (resolved at compile time). */
+    public RouteTelemetry telemetry() {
+        return telemetry;
     }
 
     /** Owning tenant, or null. */

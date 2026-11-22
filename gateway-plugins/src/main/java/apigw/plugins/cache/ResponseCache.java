@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,6 +34,13 @@ public final class ResponseCache {
     private final RedisClient redis;
     private final Map<String, Flight> flights = new ConcurrentHashMap<>();
     private final AtomicLong lastWarn = new AtomicLong();
+    private final LongAdder[] lookups = {new LongAdder(), new LongAdder(), new LongAdder(), new LongAdder()};
+
+    /** Lookup results counted for metrics: index into {@link #lookups(int)}. */
+    public static final int HIT = 0;
+    public static final int STALE = 1;
+    public static final int MISS = 2;
+    public static final int BYPASS = 3;
 
     /**
      * @param maxBytes approximate L1 bound (entry weight is body + headers + key)
@@ -42,6 +50,20 @@ public final class ResponseCache {
         this.l1 = Caffeine.newBuilder().maximumWeight(maxBytes)
                 .weigher((String k, CachedResponse v) -> v.weight()).build();
         this.redis = redis;
+    }
+
+    void counted(int result) {
+        lookups[result].increment();
+    }
+
+    /** Lookups since start with the given result ({@link #HIT}, {@link #STALE}, {@link #MISS}, {@link #BYPASS}). */
+    public long lookups(int result) {
+        return lookups[result].sum();
+    }
+
+    /** Bytes held in L1 (approximate weight). */
+    public long l1Bytes() {
+        return l1.policy().eviction().map(e -> e.weightedSize().orElse(0)).orElse(0L);
     }
 
     CachedResponse get(String key) {

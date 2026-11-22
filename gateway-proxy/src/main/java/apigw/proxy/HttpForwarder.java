@@ -8,6 +8,7 @@ import io.vertx.core.Vertx;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Streams admitted requests to upstream targets. One instance per event loop, used only from that
@@ -23,7 +24,8 @@ public final class HttpForwarder implements Forwarder {
     private final TargetResolver resolver;
     private final HealthChecker health;
     private final Map<String, RetryBudget> budgets = new HashMap<>();
-    private final Map<String, UpstreamState> states = new HashMap<>();
+    /** Concurrent only so metrics can read it from the scrape thread; written by this loop alone. */
+    private final Map<String, UpstreamState> states = new ConcurrentHashMap<>();
     private long generation;
 
     public HttpForwarder(Vertx vertx) {
@@ -78,6 +80,23 @@ public final class HttpForwarder implements Forwarder {
                 e.getValue().retire();
                 it.remove();
             }
+        }
+    }
+
+    /** Receives one row per live upstream on this event loop (metrics; called from the scrape thread). */
+    @FunctionalInterface
+    public interface UpstreamSampler {
+        void sample(String upstreamId, int inflight, boolean breakerOpen);
+    }
+
+    /** Reports in-flight requests and breaker state per upstream. Values may be slightly stale. */
+    public void sample(UpstreamSampler sampler) {
+        for (UpstreamState s : states.values()) {
+            int n = 0;
+            for (int v : s.inflight) {
+                n += v;
+            }
+            sampler.sample(s.definition.id(), n, s.breakerOpen.get());
         }
     }
 

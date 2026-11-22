@@ -1,5 +1,8 @@
 package apigw.proxy;
 
+import apigw.core.observe.AttemptOutcome;
+import apigw.core.observe.RouteTelemetry;
+import apigw.core.observe.Trace;
 import apigw.core.pipeline.Headers;
 import apigw.core.pipeline.Problems;
 import apigw.core.pipeline.ProxyExchange;
@@ -60,6 +63,9 @@ final class ProxyCall {
     private int target = -1;
     private int permit;
     private long attemptStartMs;
+    private long attemptStartNanos;
+    private final RouteTelemetry meters;
+    private final Trace trace;
     private boolean attemptOpen;
     private boolean bodyStarted;
     private HttpClientRequest upstream;
@@ -77,6 +83,8 @@ final class ProxyCall {
         this.exchange = exchange;
         this.budget = budget;
         this.retries = exchange.route().retries();
+        this.meters = exchange.route().telemetry();
+        this.trace = exchange.trace();
         HttpServerRequest req = exchange.request();
         String cl = req.getHeader("content-length");
         this.hasBody = cl != null ? !"0".equals(cl.trim())
@@ -113,6 +121,7 @@ final class ProxyCall {
             if (permit == CircuitBreaker.REJECTED) {
                 LOG.debug("circuit open route={} requestId={} upstream={}", exchange.route().id(),
                         exchange.requestId(), state.definition.id());
+                meters.attempt(AttemptOutcome.CIRCUIT_OPEN, 0, 0, attempt);
                 finish(503);
                 return;
             }
@@ -122,6 +131,7 @@ final class ProxyCall {
         epoch++;
         attemptOpen = true;
         attemptStartMs = now;
+        attemptStartNanos = System.nanoTime();
         headersReceived = false;
         upstream = null;
         CompiledUpstream.Target t = state.definition.targets().get(target);
@@ -148,6 +158,9 @@ final class ProxyCall {
     private void connect(CompiledUpstream.Target t, InetAddress address) {
         HttpServerRequest req = exchange.request();
         ResolvedTimeouts to = exchange.route().timeouts();
+        if (trace != null) {
+            trace.attemptStart(exchange.upstreamHeaders(), t.host(), t.port(), attempt);
+        }
         RequestOptions options = new RequestOptions()
                 .setMethod(req.method())
                 .setHost(t.host())
@@ -239,6 +252,10 @@ final class ProxyCall {
     private void onResponse(HttpClientResponse resp) {
         int status = resp.statusCode();
         long elapsed = nowMs() - attemptStartMs;
+        meters.attempt(AttemptOutcome.RESPONSE, status, System.nanoTime() - attemptStartNanos, attempt);
+        if (trace != null) {
+            trace.attemptResult(status, null);
+        }
         boolean breakerFailure = state.breaker != null && state.breaker.isFailureStatus(status);
         boolean targetFailure = status == 502 || status == 503 || status == 504;
         record(breakerFailure, targetFailure, elapsed);
@@ -317,6 +334,17 @@ final class ProxyCall {
         if (released) {
             return;
         }
+        AttemptOutcome outcome = switch (kind) {
+            case CONNECT -> AttemptOutcome.CONNECT_ERROR;
+            case RESET, STATUS -> AttemptOutcome.RESET;
+            case TIMEOUT -> AttemptOutcome.TIMEOUT;
+            case OVERFLOW -> AttemptOutcome.POOL_FULL;
+            case DENIED -> AttemptOutcome.DENIED;
+        };
+        meters.attempt(outcome, 0, attemptOpen ? System.nanoTime() - attemptStartNanos : 0, attempt);
+        if (trace != null) {
+            trace.attemptResult(0, outcome);
+        }
         if (kind == Kind.OVERFLOW || kind == Kind.DENIED) {
             // Local pool overflow and SSRF denials say nothing about the target's health.
             if (state.breaker != null) {
@@ -390,6 +418,12 @@ final class ProxyCall {
                 exchange.requestId(), state.definition.id(), which);
         if (attemptOpen) {
             record(true, true, nowMs() - attemptStartMs);
+            if (!headersReceived) {
+                meters.attempt(AttemptOutcome.TIMEOUT, 0, System.nanoTime() - attemptStartNanos, attempt);
+            }
+            if (trace != null) {
+                trace.attemptResult(0, AttemptOutcome.TIMEOUT);
+            }
         }
         finish(504);
     }
@@ -438,6 +472,9 @@ final class ProxyCall {
         epoch++;
         state.inflight[target]--;
         cancelFirstByte();
+        if (trace != null) {
+            trace.attemptEnd();
+        }
     }
 
     /** The response stream ended (normally, or failed on its own): nothing to reset. */

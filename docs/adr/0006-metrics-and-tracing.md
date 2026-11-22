@@ -1,6 +1,6 @@
 # 0006 Metrics: Micrometer + Prometheus; tracing: OpenTelemetry
 
-- Status: Accepted (2026-11-18)
+- Status: Superseded by [0023](0023-in-house-metrics-and-tracing.md) (2026-11-22)
 
 ## Context
 We need Prometheus-scrapable metrics with bounded cardinality, low per-request overhead, and W3C trace context propagation, and both must work in Native Image.

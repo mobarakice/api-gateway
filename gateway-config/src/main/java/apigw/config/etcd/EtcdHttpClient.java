@@ -44,6 +44,13 @@ public final class EtcdHttpClient implements AutoCloseable {
     private final List<URI> endpoints;
     private final AtomicInteger current = new AtomicInteger();
     private volatile String token;
+    private volatile CallObserver observer = (op, ok, nanos) -> { };
+
+    /** Sees every unary etcd request (not watch streams): operation name, outcome, latency. */
+    @FunctionalInterface
+    public interface CallObserver {
+        void call(String op, boolean ok, long nanos);
+    }
 
     private EtcdHttpClient(HttpClientAgent http, EtcdClientConfig config) {
         this.http = http;
@@ -65,6 +72,11 @@ public final class EtcdHttpClient implements AutoCloseable {
                     .setKeyPath(config.clientKey().orElseThrow().toString())));
         }
         return new EtcdHttpClient(vertx.createHttpClient(options, new PoolOptions().setHttp1MaxSize(8)), config);
+    }
+
+    /** Sets the observer of unary requests (metrics). */
+    public void observe(CallObserver o) {
+        this.observer = java.util.Objects.requireNonNull(o);
     }
 
     /** Endpoint the next request goes to. */
@@ -249,6 +261,12 @@ public final class EtcdHttpClient implements AutoCloseable {
     }
 
     private Future<JsonNode> call(String path, ObjectNode body) {
+        long start = System.nanoTime();
+        String op = path.substring(path.lastIndexOf('/') + 1);
+        return callOnce(path, body).andThen(ar -> observer.call(op, ar.succeeded(), System.nanoTime() - start));
+    }
+
+    private Future<JsonNode> callOnce(String path, ObjectNode body) {
         return ensureToken()
                 .compose(v -> send(path, body, token))
                 .recover(e -> {

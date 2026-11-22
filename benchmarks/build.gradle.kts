@@ -11,6 +11,8 @@ dependencies {
     implementation(project(":gateway-core"))
     implementation(project(":gateway-proxy"))
     implementation(project(":gateway-plugins"))
+    implementation(project(":gateway-app"))
+    implementation(project(":gateway-observability"))
     implementation(testFixtures(project(":gateway-plugins")))
     implementation(libs.jackson.databind)
     implementation(libs.jmh.core)

@@ -7,7 +7,7 @@
 | `GW_BIND_HOST` | `0.0.0.0` | Listen address for all listeners |
 | `GW_HTTP_PORT` | `8080` | Plaintext listener: HTTP/1.1 + h2c (prior knowledge and upgrade) |
 | `GW_HTTPS_PORT` | `8443` | TLS listener (only with `GW_TLS_CERT` + `GW_TLS_KEY`): h2 via ALPN, HTTP/1.1 |
-| `GW_STATUS_PORT` | `9901` | `/healthz`, `/readyz`, `/configz`; never expose publicly |
+| `GW_STATUS_PORT` | `9901` | `/healthz`, `/readyz`, `/configz`, `/metrics` (Prometheus); never expose publicly |
 | `GW_EVENT_LOOPS` | CPU count | Event loops (one traffic verticle each) |
 | `GW_TLS_CERT`, `GW_TLS_KEY` | – | PEM chain and PKCS#8 key; set both or neither |
 | `GW_SHUTDOWN_GRACE_SECONDS` | `20` | Drain time on SIGTERM |
@@ -28,6 +28,12 @@
 | `GW_REDIS_CONNECT_TIMEOUT_MS` | `2000` | Connect timeout; reconnects back off 100 ms–5 s with jitter |
 | `GW_CACHE_MAX_BYTES` | `67108864` | Size of the process-wide L1 response cache (ADR 0019) |
 | `GW_RATELIMIT_MAX_KEYS` | `200000` | Local rate-limit keys kept per process (ADR 0018) |
+| `GW_ACCESS_LOG` | `all` | Access log lines: `all`, `errors` (5xx and gateway-generated 4xx/5xx), `off` ([observability](observability.md#logs)) |
+| `GW_TRACING_ENDPOINT` | – | OTLP/HTTP collector base URL (e.g. `http://otel-collector:4318`); unset = tracing off |
+| `GW_TRACING_SAMPLE_RATIO` | `0.01` | Share of new traces recorded (0–1) |
+| `GW_TRACING_RESPECT_PARENT` | `true` | Follow the inbound `traceparent` sampled flag |
+| `GW_TRACING_SERVICE_NAME` | `apigw-gateway` | OTel `service.name` |
+| `GW_TRACING_QUEUE_SIZE` | `8192` | Spans buffered for export; overflow is dropped and counted |
 
 Without a valid configuration the gateway answers 503 and `/readyz` reports why.
 

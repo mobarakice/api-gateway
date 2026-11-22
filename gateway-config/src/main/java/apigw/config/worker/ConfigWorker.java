@@ -116,9 +116,21 @@ public final class ConfigWorker extends VerticleBase {
     private volatile boolean stopped;
     private String configError;
     private String etcdError;
+    private final ConfigMetrics metrics;
+    /** Revision and publish time of the newest {@code history/head} seen on the watch (0 = none). */
+    private long headRevision;
+    private long headPublishedMillis;
+    private boolean synced;
 
     public ConfigWorker(Settings settings, SnapshotCompiler compiler, SnapshotHolder holder,
             Consumer<Snapshot> onPublished) {
+        this(settings, compiler, holder, onPublished,
+                new ConfigMetrics(new apigw.observability.metrics.MetricRegistry()));
+    }
+
+    public ConfigWorker(Settings settings, SnapshotCompiler compiler, SnapshotHolder holder,
+            Consumer<Snapshot> onPublished, ConfigMetrics metrics) {
+        this.metrics = metrics;
         this.settings = settings;
         this.compiler = compiler;
         this.holder = holder;
@@ -135,6 +147,7 @@ public final class ConfigWorker extends VerticleBase {
     @Override
     public Future<?> start() {
         client = EtcdHttpClient.create(vertx, settings.etcd());
+        client.observe(metrics);
         heartbeat = new NodeHeartbeat(vertx, client, settings.prefix() + "nodes/" + settings.gatewayId(),
                 settings.heartbeatTtlSeconds(), this::onEtcdCall);
         restoreLkg();
@@ -198,6 +211,10 @@ public final class ConfigWorker extends VerticleBase {
                 return;
             }
             Loaded loaded = ar.result();
+            if (synced) {
+                metrics.resynced();
+            }
+            synced = true;
             attempt = 0;
             etcdError = null;
             working = loaded.kvs();
@@ -276,8 +293,12 @@ public final class ConfigWorker extends VerticleBase {
         if (r.revision() > watchRevision) {
             watchRevision = r.revision();
         }
+        metrics.etcdOk();
         boolean relevant = false;
         for (WatchEvent e : r.events()) {
+            if (e.type() == WatchEvent.Type.PUT && e.kv().key().equals(settings.prefix() + "history/head")) {
+                notePublish(e.kv());
+            }
             if (EtcdSnapshotBuilder.isConfigKey(settings.prefix(), e.kv().key())) {
                 pending.add(e);
                 relevant = true;
@@ -293,6 +314,7 @@ public final class ConfigWorker extends VerticleBase {
         if (stopped) {
             return;
         }
+        metrics.watchRestarted();
         watch = null;
         flushPending();
         if (cause instanceof EtcdException ee && ee.code() == EtcdException.OUT_OF_RANGE) {
@@ -389,6 +411,7 @@ public final class ConfigWorker extends VerticleBase {
             configError = "revision " + revision + ": " + summary(e.errors());
             LOG.error("config change rejected, keeping revision {} trigger={} revision={} errors={}", applied,
                     trigger, revision, summary(e.errors()));
+            metrics.rejected();
             update(holder.current() == null ? WorkerStatus.State.NO_CONFIG : WorkerStatus.State.INVALID_CONFIG);
             return;
         }
@@ -416,11 +439,30 @@ public final class ConfigWorker extends VerticleBase {
     private void publish(Snapshot s, String from) {
         holder.publish(s);
         applied = s.revision();
+        metrics.applied();
+        if (headRevision > 0 && "etcd".equals(from) && s.revision() >= headRevision) {
+            metrics.propagated(System.currentTimeMillis() - headPublishedMillis);
+            headRevision = 0;
+        }
         source = from;
         LOG.info("config snapshot published source={} revision={} generation={} routes={} upstreams={}", from,
                 s.revision(), s.generation(), s.routeCount(), s.upstreams().size());
         update(from.equals("lkg") ? WorkerStatus.State.SERVING_STALE : WorkerStatus.State.SERVING);
         onPublished.accept(s);
+    }
+
+    /** Remembers when the control plane published the change set that wrote this head. */
+    private void notePublish(KeyValue head) {
+        try {
+            String at = JSON.readTree(head.value()).path("publishedAt").asText("");
+            if (!at.isEmpty()) {
+                headPublishedMillis = Instant.parse(at).toEpochMilli();
+                headRevision = head.modRevision();
+                metrics.published(head.modRevision());
+            }
+        } catch (IOException | java.time.format.DateTimeParseException e) {
+            LOG.debug("history/head not understood: {}", e.toString());
+        }
     }
 
     // ---- failure handling and status -----------------------------------------------------------

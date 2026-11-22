@@ -38,6 +38,7 @@ testing {
                 implementation(libs.testcontainers.junit)
                 implementation(libs.assertj.core)
                 implementation(libs.awaitility)
+                implementation(libs.jackson.databind)
                 compileOnly(libs.vertx.codegen.api)
                 compileOnly(libs.vertx.codegen.json)
             }

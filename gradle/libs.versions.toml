@@ -19,6 +19,8 @@ spotbugsPlugin = "6.5.13"
 graalvmNative = "1.1.19"
 etcdImage = "gcr.io/etcd-development/etcd:v3.7.3"  # official image, latest stable 3.x (2026-11-18)
 redisImage = "redis:8.10.3"  # official image, latest stable (2026-11-21); integration tests only
+prometheusImage = "prom/prometheus:v3.16.0"  # official image (2026-11-05); observability IT + Compose
+jaegerImage = "jaegertracing/jaeger:2.23.0"    # official image (2026-11-05); OTLP receiver in the observability IT
 
 [libraries]
 jmh-core = { module = "org.openjdk.jmh:jmh-core", version.ref = "jmh" }

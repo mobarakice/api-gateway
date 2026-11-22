@@ -18,13 +18,14 @@ if you change a command, module, or convention, update this file in the same com
 | `gateway-plugins/` | Built-in plugins: `jwt` (+ OIDC key sets), `key-auth`, `authz`, `headers`, `cors`, `ip-restriction`, `request-size-limit`, `request-transform`, `rate-limit` (ADR 0018), `cache` (ADR 0019); minimal RESP2 Redis client (`redis/`). Test fixtures (`TestJwt`, JDK-signed tokens) in `src/testFixtures` |
 | `gateway-proxy/` | Upstream pools, load balancing, SSRF connect-time resolver (`TargetResolver`), circuit breaker, passive ejection + active health checks, retries with budget (ADR 0017), response tap, streaming proxy |
 | `gateway-config/` | etcd HTTP/JSON client, config worker (`worker/`: sync, watch, LKG, heartbeat — ADR 0014), file source |
-| `gateway-observability/` | Metrics, tracing, and the SLF4J JSON log provider (ADR 0007) |
+| `gateway-observability/` | In-house metric registry + Prometheus text (`metrics/`), W3C trace context + OTLP/HTTP JSON exporter (`tracing/`), SLF4J JSON log provider (`logging/`) — ADR 0007, 0023. No Micrometer/OTel SDK. Gateway wiring in `gateway-app/.../telemetry/`; core SPI in `gateway-core/.../observe/` |
 | `gateway-app/` | `main`, wiring, Native Image metadata |
 | `control-plane/` | Admin API (Vert.x, `api/`), OIDC auth + roles (`auth/`), change sets, dry-run validation and single-txn publish/rollback (`changes/`, ADR 0020), audit (`audit/`, ADR 0021), etcd store (`store/`), migrations |
 | `test-support/` | Test-only helpers: throwaway PKI (`TestPki`), etcd Testcontainers cluster/node (`EtcdTestCluster`, `EtcdTestNode`) with TLS + auth + gateway and control-plane roles, fixed ports, kill/restart/pause; Redis node (`RedisTestNode`, ACL user, pause/resume). Never shipped |
 | `admin-console/` | React 19 + TypeScript (strict) + Vite console (pnpm; not a Gradle project; ADR 0022): `src/api` (client, TanStack Query hooks), `src/auth` (OIDC code + PKCE, memory-only tokens), `src/schema` (JSON Schema forms + `@cfworker/json-schema`), `src/forms`, `src/pages`; Playwright e2e in `e2e/` |
 | `integration-tests/`, `benchmarks/` | Testcontainers suites; JMH and load scenarios |
-| `deployment/` | Dockerfiles, Compose, Kustomize base and overlays. `docker/compose.yml` = local stack (etcd TLS+auth, Redis, echo, 2 gateways, control plane, Keycloak, console); its init service generates certs/passwords into git-ignored `docker/.local/` |
+| `deployment/` | Dockerfiles, Compose, Kustomize base and overlays. `docker/compose.yml` = local stack (etcd TLS+auth, Redis, echo, 2 gateways, control plane, Keycloak, console, Prometheus, Grafana, Jaeger); its init service generates certs/passwords into git-ignored `docker/.local/` |
+| `deployment/observability/` | Prometheus scrape config, recording/alert rules + promtool tests, Grafana dashboard JSON and provisioning. Runbooks: `docs/operations/observability.md` |
 | `performance/` | k6/wrk2 scripts and raw results |
 | `docs/` | Architecture, ADRs (`docs/adr/`), API (OpenAPI), operations, performance |
 
@@ -50,6 +51,8 @@ gateway-app/build/native/nativeCompile/gateway check-etcd --help   # etcd connec
 # Local stack: etcd, Redis, echo upstream, 2 gateways, control plane, Keycloak, console (JVM images until M9)
 ./gradlew :gateway-app:installDist :control-plane:installDist
 docker compose -f deployment/docker/compose.yml up -d --build   # console http://localhost:8280; users: docs/operations/admin-console.md
+# Grafana http://localhost:3000 (admin / docker/.local/secrets/grafana-admin), Prometheus :9090, Jaeger :16686
+# Alert rules: promtool check/test (docs/operations/observability.md); ObservabilityIT runs them against real Prometheus
 
 # Admin console
 cd admin-console
@@ -151,7 +154,9 @@ For anything in the request path or config worker, also run the native build and
 - Errors to clients: generic body with a request ID (RFC 9457 problem details on the Admin API).
   Never leak upstream hosts, IPs, stack traces, or config details.
 - Logging: structured JSON via SLF4J (our provider in `gateway-observability`; no Logback/Log4j2). Never log tokens, credentials, keys, secrets, or bodies.
-  Use route ID, never raw path, as a metric label.
+  Use route ID, never raw path, as a metric label. Per-route meters are resolved at snapshot compile time
+  (`RouteTelemetryFactory`) and pruned on publish; a new metric/alert/dashboard panel needs the catalogue in
+  `docs/operations/observability.md` updated, and alerts need a promtool test case and a runbook section.
 - Frontend: TypeScript strict, no `any` without a comment explaining why. API state via TanStack
   Query. Plugin forms render from the schema served by `GET /admin/v1/plugins/{name}/schema`.
   Tokens in memory only, never `localStorage`. No inline scripts or `style` props (strict CSP with Trusted

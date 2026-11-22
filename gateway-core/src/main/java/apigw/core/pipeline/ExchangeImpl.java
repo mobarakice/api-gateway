@@ -1,6 +1,8 @@
 package apigw.core.pipeline;
 
 import apigw.core.auth.Principal;
+import apigw.core.observe.RequestTelemetry;
+import apigw.core.observe.Trace;
 import apigw.core.plugin.LogPlugin;
 import apigw.core.plugin.Plugin;
 import apigw.core.plugin.Outcome;
@@ -33,6 +35,10 @@ final class ExchangeImpl implements ProxyExchange {
     private final String clientIp;
     private final MultiMap upstreamHeaders;
     private final long startNanos;
+    private final RequestTelemetry telemetry;
+    private final Trace trace;
+    /** The gateway produced the response itself (not the upstream). */
+    private boolean local;
     private String upstreamUri;
     private int next;
     private boolean responded;
@@ -49,7 +55,8 @@ final class ExchangeImpl implements ProxyExchange {
     private MultiMap extraResponseHeaders;
 
     ExchangeImpl(HttpServerRequest request, Snapshot snapshot, CompiledRoute route, int[] params,
-            Forwarder forwarder, String requestId, String host, long startNanos) {
+            Forwarder forwarder, String requestId, String host, long startNanos, RequestTelemetry telemetry,
+            Trace trace) {
         this.request = request;
         this.snapshot = snapshot;
         this.route = route;
@@ -57,6 +64,8 @@ final class ExchangeImpl implements ProxyExchange {
         this.forwarder = forwarder;
         this.requestId = requestId;
         this.startNanos = startNanos;
+        this.telemetry = telemetry;
+        this.trace = trace;
         String uri = request.uri();
         if (uri.isEmpty() || uri.charAt(0) != '/') {
             String q = request.query();
@@ -231,6 +240,7 @@ final class ExchangeImpl implements ProxyExchange {
         if (!beginResponse(code, headers)) {
             return Outcome.STOP;
         }
+        local = true;
         HttpServerResponse response = request.response();
         if (!request.isEnded() && request.version() != HttpVersion.HTTP_2) {
             closeAfterResponse = true;
@@ -274,6 +284,11 @@ final class ExchangeImpl implements ProxyExchange {
     @Override
     public void tapResponse(apigw.core.plugin.ResponseTap t) {
         this.tap = t;
+    }
+
+    @Override
+    public Trace trace() {
+        return trace;
     }
 
     @Override
@@ -345,6 +360,7 @@ final class ExchangeImpl implements ProxyExchange {
             return Outcome.STOP;
         }
         responded = true;
+        local = true;
         HttpServerResponse response = request.response();
         if (response.headWritten()) {
             // Too late for a clean error: the client sees a reset/closed stream instead of a truncated success.
@@ -439,12 +455,13 @@ final class ExchangeImpl implements ProxyExchange {
     private void finish() {
         finished = true;
         abortAction = null;
+        long duration = System.nanoTime() - startNanos;
+        int s = status == 0 ? request.response().getStatusCode() : status;
+        observe(s, duration);
         LogPlugin[] logs = route.logPlugins();
         if (logs.length == 0) {
             return;
         }
-        long duration = System.nanoTime() - startNanos;
-        int s = status == 0 ? request.response().getStatusCode() : status;
         int[] slots = route.logSlots();
         Plugin[] o = overrides;
         for (int i = 0; i < logs.length; i++) {
@@ -488,6 +505,15 @@ final class ExchangeImpl implements ProxyExchange {
             plugin.onComplete(this, code, durationNanos);
         } catch (RuntimeException e) {
             pluginFailed(plugin, e);
+        }
+    }
+
+    @SuppressWarnings("checkstyle:IllegalCatch")
+    private void observe(int code, long durationNanos) {
+        try {
+            telemetry.completed(this, code, local, durationNanos, trace);
+        } catch (RuntimeException e) {
+            LOG.error("telemetry failed route={} requestId={}", route.id(), requestId, e);
         }
     }
 

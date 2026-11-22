@@ -105,6 +105,19 @@ class GatewayServerTest {
     }
 
     @Test
+    void servesPrometheusMetricsOnTheStatusPort() throws Exception {
+        get(new HttpClientOptions(), false, server.httpPort(), "/before-scrape");
+        Response r = get(new HttpClientOptions(), false, server.statusPort(), "/metrics");
+        assertThat(r.status).isEqualTo(200);
+        assertThat(r.contentType).isEqualTo("text/plain; version=0.0.4; charset=utf-8");
+        assertThat(r.body).contains("# TYPE gw_connections_total counter")
+                .contains("gw_connections_total{listener=\"http\"}")
+                .contains("gw_connections_active{listener=\"https\"}");
+        Response publicPort = get(new HttpClientOptions(), false, server.httpPort(), "/metrics");
+        assertNotFoundProblem(publicPort);
+    }
+
+    @Test
     void statusEndpointsAreNotOnThePublicPort() throws Exception {
         Response r = get(new HttpClientOptions(), false, server.httpPort(), "/healthz");
         assertNotFoundProblem(r);
