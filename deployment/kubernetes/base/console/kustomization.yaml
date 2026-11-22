@@ -1,0 +1,7 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: [deployment.yaml, service.yaml, pdb.yaml, networkpolicy.yaml]
+# example.com placeholders (RFC 2606): every overlay replaces both files with its origins.
+configMapGenerator:
+  - name: console-config
+    files: [sws.toml, config.json]

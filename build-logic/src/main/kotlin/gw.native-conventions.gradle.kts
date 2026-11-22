@@ -40,6 +40,21 @@ graalvmNative {
             "--initialize-at-run-time=io.netty.handler.ssl.SslContext",
         )
     }
+    // Container builds (deployment/docker/*.native.Dockerfile, Linux only):
+    //   -Pgw.nativeStaticLibc=true  link everything but glibc statically, so the binary runs on distroless/base
+    //   -Pgw.nativeGc=G1            Oracle GraalVM G1 (Linux only); default Serial. Choice per profile: ADR 0008
+    val staticLibc = providers.gradleProperty("gw.nativeStaticLibc").map { it.toBoolean() }.orElse(false)
+    val gc = providers.gradleProperty("gw.nativeGc").orElse("serial")
+    binaries.named("main") {
+        if (staticLibc.get()) {
+            buildArgs.add("-H:+StaticExecutableWithDynamicLibC")
+        }
+        when (gc.get().lowercase()) {
+            "serial" -> {}
+            "g1" -> buildArgs.add("--gc=G1")
+            else -> throw GradleException("gw.nativeGc must be serial or G1")
+        }
+    }
     binaries.named("test") {
         buildArgs.add("-H:+ReportExceptionStackTraces")
     }

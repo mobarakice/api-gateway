@@ -74,6 +74,16 @@ public final class EtcdTestNode implements AutoCloseable {
         cluster.compact(revision);
     }
 
+    /** Saves an etcd snapshot of the node to {@code target} on the host. */
+    public void snapshot(Path target) {
+        cluster.member(0).snapshot(target);
+    }
+
+    /** Discards the node and its data, then restores {@code snapshot} (revision bumped, marked compacted). */
+    public void restoreFrom(Path snapshot, long bumpRevision, Path workDir) throws java.io.IOException {
+        cluster.member(0).restoreFrom(snapshot, bumpRevision, workDir);
+    }
+
     /** SIGKILL the node; data survives for {@link #restart()}. */
     public void kill() {
         cluster.member(0).kill();

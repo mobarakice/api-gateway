@@ -1,5 +1,5 @@
 # Local-stack image: the jvm-prod distribution (./gradlew :gateway-app:installDist) on a JRE.
-# The production image (native binary, distroless) is built in M9.
+# Production image: *.native.Dockerfile. This one is the jvm-prod comparison target (M10) and compose.jvm.yml.
 FROM eclipse-temurin:25-jre
 COPY gateway-app/build/install/gateway /opt/gateway
 USER 10001:10001

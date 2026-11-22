@@ -1,0 +1,32 @@
+# staging console CSP: connect-src = Admin API + IdP origins.
+# lists exactly the Admin API and the identity provider origins.
+[general]
+host = "0.0.0.0"
+port = 8080
+root = "/public"
+log-level = "info"
+compression = true
+cache-control-headers = false
+security-headers = false
+directory-listing = false
+page-fallback = "/public/index.html"
+health = true
+
+[advanced]
+
+[[advanced.headers]]
+source = "**"
+[advanced.headers.headers]
+Content-Security-Policy = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self' https://admin.staging.example.com https://idp.staging.example.com; form-action 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'; manifest-src 'self'; require-trusted-types-for 'script'; trusted-types 'none'"
+X-Content-Type-Options = "nosniff"
+Referrer-Policy = "no-referrer"
+Cross-Origin-Opener-Policy = "same-origin"
+Cross-Origin-Resource-Policy = "same-origin"
+Permissions-Policy = "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+X-Frame-Options = "DENY"
+Cache-Control = "no-cache"
+
+[[advanced.headers]]
+source = "/assets/**"
+[advanced.headers.headers]
+Cache-Control = "public, max-age=31536000, immutable"

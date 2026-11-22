@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: [serviceaccount.yaml, services.yaml, statefulset.yaml, pdb.yaml, networkpolicy.yaml,
+            job-bootstrap-auth.yaml, cronjob-backup.yaml, cronjob-defrag.yaml]
+configMapGenerator:
+  - name: etcd-ops-env
+    literals:
+      - ETCD_ENDPOINTS=https://etcd-0.etcd:2379,https://etcd-1.etcd:2379,https://etcd-2.etcd:2379
+      - ETCD_INITIAL_CLUSTER=etcd-0=https://etcd-0.etcd:2380,etcd-1=https://etcd-1.etcd:2380,etcd-2=https://etcd-2.etcd:2380
+      - ETCD_CLUSTER_TOKEN=apigw-etcd
+      - ETCD_QUOTA_BACKEND_BYTES=2147483648
+      - ETCD_PREFIX=/gw/base/
+      - BACKUP_REMOTE=backup:apigw-etcd/base
+      - BACKUP_RETENTION=14d

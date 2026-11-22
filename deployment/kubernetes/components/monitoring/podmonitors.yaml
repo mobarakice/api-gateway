@@ -1,0 +1,46 @@
+# Prometheus Operator scrape configs. Job names match the shipped rules and dashboard (apigw-gateway,
+# apigw-control-plane, etcd); `instance` is the pod.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: apigw-gateway
+spec:
+  selector:
+    matchLabels: {app.kubernetes.io/name: gateway}
+  podMetricsEndpoints:
+    - port: status
+      path: /metrics
+      interval: 15s
+      relabelings:
+        - {targetLabel: job, replacement: apigw-gateway}
+        - {sourceLabels: [__meta_kubernetes_pod_name], targetLabel: instance}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: apigw-control-plane
+spec:
+  selector:
+    matchLabels: {app.kubernetes.io/name: control-plane}
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+      relabelings:
+        - {targetLabel: job, replacement: apigw-control-plane}
+        - {sourceLabels: [__meta_kubernetes_pod_name], targetLabel: instance}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: apigw-etcd
+spec:
+  selector:
+    matchLabels: {app.kubernetes.io/name: etcd}
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+      relabelings:
+        - {targetLabel: job, replacement: etcd}
+        - {sourceLabels: [__meta_kubernetes_pod_name], targetLabel: instance}

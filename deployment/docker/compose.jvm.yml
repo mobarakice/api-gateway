@@ -1,0 +1,13 @@
+# Override: run the gateways and control plane from the jvm-prod distributions instead of the native images.
+#   ./gradlew :gateway-app:installDist :control-plane:installDist
+#   docker compose -f deployment/docker/compose.yml -f deployment/docker/compose.jvm.yml up -d --build
+services:
+  gateway-1:
+    build: { context: ../.., dockerfile: deployment/docker/gateway.jvm.Dockerfile }
+    image: apigw/gateway:jvm-local
+  gateway-2:
+    build: { context: ../.., dockerfile: deployment/docker/gateway.jvm.Dockerfile }
+    image: apigw/gateway:jvm-local
+  control-plane:
+    build: { context: ../.., dockerfile: deployment/docker/control-plane.jvm.Dockerfile }
+    image: apigw/control-plane:jvm-local

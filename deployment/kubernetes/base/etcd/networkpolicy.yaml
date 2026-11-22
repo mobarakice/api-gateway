@@ -1,0 +1,60 @@
+# etcd: client port from the gateway, the control plane and etcd-ops jobs; peer port from members only;
+# metrics from monitoring. Out: peers only (plus DNS from allow-dns).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: etcd
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: etcd}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: gateway}
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: control-plane}
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: etcd-ops}
+      ports:
+        - {protocol: TCP, port: 2379}
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: etcd}
+      ports:
+        - {protocol: TCP, port: 2380}
+        - {protocol: TCP, port: 2379}
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: monitoring}
+      ports:
+        - {protocol: TCP, port: 2381}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: etcd}
+      ports:
+        - {protocol: TCP, port: 2380}
+        - {protocol: TCP, port: 2379}
+---
+# etcd-ops jobs: etcd client port and the object store (HTTPS, or the dev store on 9000).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: etcd-ops
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: etcd-ops}
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: etcd}
+      ports:
+        - {protocol: TCP, port: 2379}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [169.254.169.254/32]
+      ports:
+        - {protocol: TCP, port: 443}

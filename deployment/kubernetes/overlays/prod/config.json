@@ -1,0 +1,8 @@
+{
+  "apiBase": "https://admin.example.com",
+  "oidc": {
+    "authority": "https://idp.example.com/realms/gateway",
+    "clientId": "admin-console",
+    "scope": "openid"
+  }
+}

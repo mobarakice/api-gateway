@@ -45,7 +45,7 @@ public final class ControlPlaneMain {
 
     private static final Logger LOG = LoggerFactory.getLogger(ControlPlaneMain.class);
     private static final long AUDIT_TRIM_MS = 60_000;
-    static final String VERSION = "0.8.0-m8";
+    static final String VERSION = "0.9.0";
 
     private ControlPlaneMain() {
     }

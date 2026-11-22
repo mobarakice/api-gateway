@@ -1,0 +1,4 @@
+# Requires the Prometheus Operator CRDs (monitoring.coreos.com). Included by staging and prod.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources: [podmonitors.yaml, prometheusrule.yaml]

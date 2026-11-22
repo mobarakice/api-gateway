@@ -1,0 +1,29 @@
+# Gateway: traffic in from anywhere on the HTTP port; status/metrics only from the monitoring namespace.
+# Out: etcd client port only (never the peer port), and upstreams/Redis/OTLP anywhere except the cloud metadata
+# address. Write access to etcd config is denied by etcd RBAC (gateway-read role), not by the network.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: gateway}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports:
+        - {protocol: TCP, port: 8080}
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: monitoring}
+      ports:
+        - {protocol: TCP, port: 9901}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: etcd}
+      ports:
+        - {protocol: TCP, port: 2379}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [169.254.169.254/32]

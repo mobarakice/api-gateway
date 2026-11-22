@@ -1,0 +1,115 @@
+# Dedicated 3-member etcd (ADR 0024): TLS for clients and peers, password auth with least-privilege roles
+# (bootstrap Job), persistent SSD volumes, one member per node. Never the Kubernetes cluster's own etcd.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: etcd
+  labels: {app.kubernetes.io/name: etcd, app.kubernetes.io/component: config-store}
+spec:
+  serviceName: etcd
+  replicas: 3
+  # Members must start together to form quorum; ordered start would wait forever for etcd-0's readiness.
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels: {app.kubernetes.io/name: etcd}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: etcd, app.kubernetes.io/component: config-store}
+    spec:
+      serviceAccountName: etcd
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile: {type: RuntimeDefault}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels: {app.kubernetes.io/name: etcd}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {app.kubernetes.io/name: etcd}
+      containers:
+        - name: etcd
+          image: gcr.io/etcd-development/etcd:v3.7.3
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POD_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - name: ETCD_INITIAL_CLUSTER
+              valueFrom: {configMapKeyRef: {name: etcd-ops-env, key: ETCD_INITIAL_CLUSTER}}
+            - name: ETCD_INITIAL_CLUSTER_TOKEN
+              valueFrom: {configMapKeyRef: {name: etcd-ops-env, key: ETCD_CLUSTER_TOKEN}}
+            - {name: ETCD_INITIAL_CLUSTER_STATE, value: new}
+            - name: ETCD_QUOTA_BACKEND_BYTES
+              valueFrom: {configMapKeyRef: {name: etcd-ops-env, key: ETCD_QUOTA_BACKEND_BYTES}}
+          command:
+            - etcd
+            - --name=$(POD_NAME)
+            - --data-dir=/var/lib/etcd/data
+            - --listen-client-urls=https://0.0.0.0:2379
+            - --advertise-client-urls=https://$(POD_NAME).etcd:2379
+            - --listen-peer-urls=https://0.0.0.0:2380
+            - --initial-advertise-peer-urls=https://$(POD_NAME).etcd:2380
+            - --listen-metrics-urls=http://0.0.0.0:2381
+            - --cert-file=/etc/etcd/tls/tls.crt
+            - --key-file=/etc/etcd/tls/tls.key
+            - --peer-cert-file=/etc/etcd/tls/tls.crt
+            - --peer-key-file=/etc/etcd/tls/tls.key
+            - --peer-trusted-ca-file=/etc/etcd/tls/ca.crt
+            - --peer-client-cert-auth=true
+            - --auth-token=simple
+            - --max-txn-ops=128
+            - --auto-compaction-mode=periodic
+            - --auto-compaction-retention=1h
+            - --snapshot-count=10000
+          ports:
+            - {name: client, containerPort: 2379, protocol: TCP}
+            - {name: peer, containerPort: 2380, protocol: TCP}
+            - {name: metrics, containerPort: 2381, protocol: TCP}
+          startupProbe:
+            httpGet: {path: /livez, port: metrics}
+            periodSeconds: 2
+            failureThreshold: 90
+          readinessProbe:
+            httpGet: {path: /readyz, port: metrics}
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: {path: /livez, port: metrics}
+            periodSeconds: 10
+            failureThreshold: 6
+            timeoutSeconds: 3
+          resources:
+            requests: {cpu: 500m, memory: 512Mi}
+            limits: {memory: 2Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/etcd}
+            - {name: tls, mountPath: /etc/etcd/tls, readOnly: true}
+      volumes:
+        - name: tls
+          secret: {secretName: etcd-tls}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        # storageClassName: set per overlay (an SSD class in staging/prod).
+        resources:
+          requests: {storage: 8Gi}

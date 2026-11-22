@@ -1,0 +1,19 @@
+# Console: static files only. In from anywhere on 8080; out only to the control plane (the browser calls the Admin
+# API through its own ingress; the pod itself never needs etcd or anything else).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: console
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: console}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports:
+        - {protocol: TCP, port: 8080}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: control-plane}
+      ports:
+        - {protocol: TCP, port: 9443}

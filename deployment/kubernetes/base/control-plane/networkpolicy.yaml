@@ -1,0 +1,30 @@
+# Control plane: Admin API from anywhere (browsers through the ingress, the console pods); metrics from monitoring.
+# Out: etcd client port (the only writer of config, enforced by etcd RBAC) and HTTPS for the OIDC JWKS/discovery.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: control-plane
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: control-plane}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports:
+        - {protocol: TCP, port: 9443}
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: monitoring}
+      ports:
+        - {protocol: TCP, port: 9902}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: etcd}
+      ports:
+        - {protocol: TCP, port: 2379}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [169.254.169.254/32]
+      ports:
+        - {protocol: TCP, port: 443}

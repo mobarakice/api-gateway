@@ -1,0 +1,13 @@
+# Not applied by this component: the prometheus-adapter configuration (in the adapter's own namespace) that serves
+# the HPA's per-pod metric gw_requests_per_second from the gateway's request counter. Merge into the adapter's
+# `rules:` (Helm value `rules.custom`). docs/operations/kubernetes.md#autoscaling.
+rules:
+  - seriesQuery: 'gw_requests_total{namespace!="",pod!=""}'
+    resources:
+      overrides:
+        namespace: {resource: namespace}
+        pod: {resource: pod}
+    name:
+      matches: "^gw_requests_total$"
+      as: "gw_requests_per_second"
+    metricsQuery: 'sum by (<<.GroupBy>>) (rate(gw_requests_total{<<.LabelMatchers>>}[1m]))'

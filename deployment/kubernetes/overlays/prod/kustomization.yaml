@@ -1,0 +1,48 @@
+# prod: images from your registry (CI pins the digest: kustomize edit set image), Prometheus Operator monitoring,
+# SSD storage for etcd, OIDC discovery. Values marked example.com are placeholders to replace for the environment.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: apigw-prod
+resources:
+  - ../../base
+components:
+  - ../../components/monitoring
+configMapGenerator:
+  - name: gateway-env
+    behavior: merge
+    literals:
+      - GW_ETCD_PREFIX=/gw/prod/
+      - GW_ACCESS_LOG=errors
+      - GW_TRACING_ENDPOINT=http://otel-collector.monitoring:4318
+      - GW_TRACING_SAMPLE_RATIO=0.01
+  - name: control-plane-env
+    behavior: merge
+    literals:
+      - CP_ETCD_PREFIX=/gw/prod/
+      - CP_OIDC_ISSUER=https://idp.example.com/realms/gateway
+      - CP_OIDC_DISCOVERY=https://idp.example.com/realms/gateway/.well-known/openid-configuration
+      - CP_CORS_ORIGINS=https://console.example.com
+  - name: etcd-ops-env
+    behavior: merge
+    literals:
+      - ETCD_PREFIX=/gw/prod/
+      - BACKUP_REMOTE=backup:apigw-etcd-backups/prod
+      - BACKUP_RETENTION=30d
+  - name: console-config
+    behavior: replace
+    files: [sws.toml, config.json]
+images:
+  - {name: apigw/gateway, newName: registry.example.com/apigw/gateway, newTag: 0.9.0}
+  - {name: apigw/control-plane, newName: registry.example.com/apigw/control-plane, newTag: 0.9.0}
+  - {name: apigw/admin-console, newName: registry.example.com/apigw/admin-console, newTag: 0.9.0}
+  - {name: apigw/etcd-tools, newName: registry.example.com/apigw/etcd-tools, newTag: 0.9.0}
+patches:
+  - path: patch-prod.yaml
+  - target: {kind: HorizontalPodAutoscaler, name: gateway}
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 3
+      - op: replace
+        path: /spec/maxReplicas
+        value: 30

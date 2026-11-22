@@ -13,7 +13,7 @@ Resume rule: read `CLAUDE.md` and this file, then continue from the last green m
 | M6 | Control plane | done (2026-11-21) |
 | M7 | Admin console | done (2026-11-21) |
 | M8 | Observability | done (2026-11-22) |
-| M9 | Docker, Kubernetes, hardening | not started |
+| M9 | Docker, Kubernetes, hardening | done (2026-11-22) |
 | M10 | Benchmarks, profiling, JVM vs native report | not started |
 
 ## M0 results
@@ -596,13 +596,83 @@ Not in M8 (planned later or deferred):
 - Intermittent: `HttpForwarderTest.preserveHostForwardsClientAuthority` failed once (empty body) and then
   passed 3/3 in isolation and in later full builds. The test dates from M2 and M8 did not touch it; it is tracked for investigation.
 
+## M9 results (2026-11-22, dev host: macOS arm64, Docker Desktop; kind v0.33.0, Kubernetes v1.37.0, 1 control plane + 3 workers, kindnet NetworkPolicy)
+
+kind is a functional target only. None of the latencies below are reference numbers.
+
+Built:
+- Native multi-stage images: an Oracle GraalVM 25.0.4 build stage, then `distroless/base-debian13:nonroot` (digest-pinned), uid 10001,
+  everything static except glibc (`-Pgw.nativeStaticLibc`), Serial GC (`-Pgw.nativeGc`). Sizes: gateway 88.8 MB, control plane 85.7 MB,
+  console 7.54 MB, etcd-tools 120 MB. Compose now uses the native images; `compose.jvm.yml` keeps the JVM ones.
+- `deployment/kubernetes`:
+  - The base has a PSA-restricted Namespace, ServiceAccounts, ConfigMaps, Secret references, Deployments, Services, HPA and PDBs.
+  - Default-deny NetworkPolicies with explicit allows. Gateway → etcd 2379 only. Console → control plane only. Only the
+    control plane and etcd-ops write etcd (by role).
+  - Probes, preStop and grace periods, topology spread, anti-affinity, and the LKG on an emptyDir.
+  - etcd: a 3-member StatefulSet (ADR 0024) with TLS for clients and peers, auth, a PDB, required anti-affinity, an hourly backup
+    CronJob to S3-compatible storage (checksum verified after upload, retention), and a weekly defrag CronJob.
+  - The `monitoring` component holds PodMonitors and the PrometheusRule generated from `deployment/observability`.
+  - Overlays: dev (echo upstream and an in-cluster `rclone serve s3` store), staging and prod (hard zone spread, LB Service).
+  - HPA: CPU 60 % plus `gw_requests_per_second` via prometheus-adapter. The docs explain why CPU alone lags.
+- Docs: `docs/operations/kubernetes.md`, the `etcd-backup-restore.md` runbook, ADR 0024, and the ADR 0008 amendment.
+
+Exit checks:
+- **Images non-root, read-only rootfs, no capabilities.** The native gateway smoke-tested with `--read-only --cap-drop ALL --user 10001`:
+  ready in 11 ms, h1 and h2c return 200, about 9.8 MiB RSS, SIGTERM drain about 0.2 s. On kind, every pod runs under PSA `restricted`
+  with `readOnlyRootFilesystem: true` and `capabilities.drop: [ALL]`.
+- **`kustomize build` + `kubeconform -strict`** (`validate.sh`): dev 40/40, staging 36/36 and prod 36/36 resources valid against
+  Kubernetes 1.30.0 and 1.34.0, CRDs included. The PrometheusRule has no drift from `deployment/observability`.
+- **Applied on kind (dev overlay).** All workloads came up on the first apply. Gateways stay not-ready until config exists, then serve.
+  NetworkPolicy probes, all as expected:
+
+  | From → To | Result |
+  |---|---|
+  | gateway → etcd 2379 | open |
+  | gateway → etcd 2380 | blocked |
+  | console → etcd | blocked |
+  | console → control plane | open |
+  | console → echo | blocked |
+  | unlabelled pod → etcd | blocked |
+
+- **Rollout drain test** (`drain-test.sh`, 3 rollouts under open-model k6 load through the Service):
+  - pre-fix image, 300 req/s for 180 s: 54,001 requests, **0 failed**, p99 5.53 ms, max 74 ms;
+  - pre-fix image, 800 req/s for 150 s: 120,001 requests, **0 failed**;
+  - final image, 300 req/s for 180 s: 54,001 requests, **0 failed**, p99 4.71 ms, p99.9 102 ms, max 300 ms (kind on a laptop; not a reference number).
+- **etcd backup + restore rehearsed** (`backup-restore.sh`, total loss of the StatefulSet and all 3 volumes, under 100 req/s):
+  - backup job ok (snapshot verified after upload);
+  - etcd restored and ready **20 s** after the disaster, and gateways resynced at **21 s**: `/before` 200, `/after` (post-backup) 404;
+  - a publish after the restore reaches the gateways;
+  - **0 of 24,001** requests failed during the outage (p99 5.57 ms, max 29 ms).
+- Compose stack on the native images (uid 10001, read-only rootfs, `cap_drop: ALL`): all services up, and the gateway restored the LKG,
+  then synced from etcd. Console Playwright e2e **8/8** (including publish to every gateway within 2 s, rollback, and no CSP violations).
+- `./gradlew build` green. `nativeTest`: gateway-config 20/20 and gateway-app 37/37.
+- Integration tests, JVM and **native**: ConfigWorkerIT 7/7 (new restore case plus etcd down at boot, restart, partition,
+  invalid change, LKG), EtcdClientIT 7, EtcdClusterIT 3 (leader change, compaction), ControlPlaneIT 7.
+
+Bug found by the rehearsal and fixed (config worker / etcd client):
+- After a snapshot restore, gateways stayed `SERVING_STALE` indefinitely.
+- Cause: an etcd simple auth token is `<token>.<raftIndex>`, and a member honours it only once its applied index reaches that
+  index. A restored cluster restarts at a low raft index, so every request carrying the old token **hung** until timeout instead
+  of failing as an invalid token. The client never re-authenticated. Heartbeat timeouts then kept recycling the watch.
+- Fix: on any transport failure, `EtcdHttpClient` drops its token and closes its pooled connections (which also re-resolves DNS).
+- Regression test: `ConfigWorkerIT.restoreFromSnapshotIsPickedUpByRunningGateways` restores a real etcd from a snapshot
+  under a running gateway (`EtcdTestNode.snapshot` / `restoreFrom`).
+
+Not in M9:
+- The multi-replica benchmark on a real cluster: BLOCKED (see below). kind proves the manifests and procedures, not capacity.
+- prometheus-adapter and Prometheus Operator are not installed on kind. The HPA custom metric and the PodMonitors are
+  schema-validated only; the dev overlay drops the custom metric.
+- Ingress / Gateway API objects for the console and Admin API, cert-manager, and External Secrets: left to the platform.
+  Secrets are referenced by name only.
+- WebSocket proxying and gRPC trailers passthrough (M5 note): not done in M9, still open.
+
 ## Known blockers
 
 - BLOCKED: reference benchmark host. The spec's reference host (2 vCPU / 4 GB, Linux) and a separate
   load-generator host are not available; the only host is a macOS arm64 laptop (8 CPU, 16 GB).
   Requester must provide two Linux hosts (gateway + load generator) and a third for the upstream.
-- BLOCKED: Kubernetes cluster for multi-replica benchmarks and the rollout drain test. Requester must
-  provide a CNCF-conformant cluster >= 1.30 (kind in Docker can cover functional checks only).
+- BLOCKED: Kubernetes cluster for multi-replica benchmarks. Requester must provide a CNCF-conformant cluster >= 1.30.
+  The rollout drain test and the etcd restore rehearsal ran on kind (functional, M9).
 - OIDC interop: the console e2e runs against a real IdP (Keycloak 26 in Compose) through the
   control plane. The gateway's `jwt` plugin is still tested with a local HTTPS discovery/JWKS
   fixture only (`SecurityPipelineTest`, `SecurityIT`).

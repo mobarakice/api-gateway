@@ -24,7 +24,8 @@ if you change a command, module, or convention, update this file in the same com
 | `test-support/` | Test-only helpers: throwaway PKI (`TestPki`), etcd Testcontainers cluster/node (`EtcdTestCluster`, `EtcdTestNode`) with TLS + auth + gateway and control-plane roles, fixed ports, kill/restart/pause; Redis node (`RedisTestNode`, ACL user, pause/resume). Never shipped |
 | `admin-console/` | React 19 + TypeScript (strict) + Vite console (pnpm; not a Gradle project; ADR 0022): `src/api` (client, TanStack Query hooks), `src/auth` (OIDC code + PKCE, memory-only tokens), `src/schema` (JSON Schema forms + `@cfworker/json-schema`), `src/forms`, `src/pages`; Playwright e2e in `e2e/` |
 | `integration-tests/`, `benchmarks/` | Testcontainers suites; JMH and load scenarios |
-| `deployment/` | Dockerfiles, Compose, Kustomize base and overlays. `docker/compose.yml` = local stack (etcd TLS+auth, Redis, echo, 2 gateways, control plane, Keycloak, console, Prometheus, Grafana, Jaeger); its init service generates certs/passwords into git-ignored `docker/.local/` |
+| `deployment/docker/` | Multi-stage Dockerfiles: `*.native.Dockerfile` (GraalVM build stage → distroless, uid 10001; default), `*.jvm.Dockerfile`, console; `etcd-tools/` (etcdctl/etcdutl + rclone, `etcd-ops` backup/restore/defrag). `compose.yml` = local stack (etcd TLS+auth, Redis, echo, 2 gateways, control plane, Keycloak, console, Prometheus, Grafana, Jaeger) on native images, `compose.jvm.yml` override for JVM images; init service writes certs/passwords to git-ignored `docker/.local/` |
+| `deployment/kubernetes/` | Kustomize `base/` (gateway, control-plane, console, etcd StatefulSet + backup/defrag CronJobs, NetworkPolicies, PSA restricted), `components/monitoring` (PodMonitors, generated PrometheusRule), `overlays/{dev,staging,prod}`, `validate.sh`, `scripts/` (kind cluster, dev secrets, token minting, seed, drain test, backup/restore rehearsal). ADR 0024; `docs/operations/kubernetes.md`, `etcd-backup-restore.md` |
 | `deployment/observability/` | Prometheus scrape config, recording/alert rules + promtool tests, Grafana dashboard JSON and provisioning. Runbooks: `docs/operations/observability.md` |
 | `performance/` | k6/wrk2 scripts and raw results |
 | `docs/` | Architecture, ADRs (`docs/adr/`), API (OpenAPI), operations, performance |
@@ -48,9 +49,15 @@ GW_ETCD_ENDPOINTS=https://localhost:2379 GW_ETCD_CA=... GW_ETCD_USER=gateway GW_
 ./gradlew :gateway-app:installDist   # jvm-prod distribution -> gateway-app/build/install/gateway/
 gateway-app/build/native/nativeCompile/gateway check-etcd --help   # etcd connectivity/role check
 
-# Local stack: etcd, Redis, echo upstream, 2 gateways, control plane, Keycloak, console (JVM images until M9)
-./gradlew :gateway-app:installDist :control-plane:installDist
+# Container images (native, distroless, non-root; Linux binaries built inside Docker)
+docker build -f deployment/docker/gateway.native.Dockerfile -t apigw/gateway:0.9.0 .        # --build-arg NATIVE_GC=G1
+docker build -f deployment/docker/control-plane.native.Dockerfile -t apigw/control-plane:0.9.0 .
+docker build -f deployment/docker/etcd-tools/Dockerfile -t apigw/etcd-tools:0.9.0 deployment/docker/etcd-tools
+
+# Local stack: etcd, Redis, echo upstream, 2 gateways, control plane, Keycloak, console (native images)
 docker compose -f deployment/docker/compose.yml up -d --build   # console http://localhost:8280; users: docs/operations/admin-console.md
+# JVM images instead: ./gradlew :gateway-app:installDist :control-plane:installDist, then
+#   docker compose -f deployment/docker/compose.yml -f deployment/docker/compose.jvm.yml up -d --build
 # Grafana http://localhost:3000 (admin / docker/.local/secrets/grafana-admin), Prometheus :9090, Jaeger :16686
 # Alert rules: promtool check/test (docs/operations/observability.md); ObservabilityIT runs them against real Prometheus
 
@@ -63,6 +70,9 @@ pnpm e2e          # Playwright against the Compose stack (once: pnpm exec playwr
 
 # Kubernetes manifests
 kustomize build deployment/kubernetes/overlays/<env> | kubeconform -strict -
+deployment/kubernetes/validate.sh    # all overlays x k8s 1.30/1.34, CRD schemas, PrometheusRule drift (kubeconform in Docker)
+# kind rehearsal (functional only): docs/operations/kubernetes.md#local-rehearsal-on-kind
+#   scripts/drain-test.sh (rollouts under load, zero failures) and scripts/backup-restore.sh (etcd total loss + restore)
 ```
 
 `./gradlew build` needs network (OSV dependency scan, ADR 0010) but not Docker.
@@ -141,6 +151,8 @@ For anything in the request path or config worker, also run the native build and
   `gateway-plugins/.../META-INF/native-image/apigw/gateway-plugins/` for the generated cache classes we use
   (SSMS/SSMW/PSMS/PSMW). A new Caffeine builder option (expiry, refresh, stats) needs its classes added there.
 - The GraalVM reachability metadata repository is off by default (`-Pgw.metadataRepository=true`).
+- Container builds add `-Pgw.nativeStaticLibc=true` (everything static except glibc, for distroless `base`) and
+  `-Pgw.nativeGc=serial|G1` (ADR 0008 amendment). Images run as uid 10001 with a read-only rootfs and no capabilities.
 - The tracing agent is for discovery only. Review and trim what it generates before committing.
 - A feature is not done until it works in the native binary, not just on the JVM.
 

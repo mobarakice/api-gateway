@@ -58,7 +58,7 @@ public final class GatewayMain {
 
     private static final Logger LOG = LoggerFactory.getLogger(GatewayMain.class);
     /** Reported in the node heartbeat. */
-    static final String BUILD_VERSION = "0.8.0-m8";
+    static final String BUILD_VERSION = "0.9.0";
 
     private GatewayMain() {
     }

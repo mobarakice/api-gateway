@@ -1,0 +1,87 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: control-plane
+  labels: {app.kubernetes.io/name: control-plane, app.kubernetes.io/component: control-plane}
+spec:
+  # Stateless: every write is one etcd transaction with mod_revision compares (ADR 0020), so replicas need no
+  # coordination. Two for availability of the Admin API; gateways keep serving without it.
+  replicas: 2
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels: {app.kubernetes.io/name: control-plane}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: control-plane, app.kubernetes.io/component: control-plane}
+    spec:
+      serviceAccountName: control-plane
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 20
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {app.kubernetes.io/name: control-plane}
+      containers:
+        - name: control-plane
+          image: apigw/control-plane:0.9.0
+          imagePullPolicy: IfNotPresent
+          args: ["-Xmx192m"]
+          envFrom:
+            - configMapRef: {name: control-plane-env}
+          env:
+            - {name: CP_TLS_CERT, value: /etc/apigw/tls/tls.crt}
+            - {name: CP_TLS_KEY, value: /etc/apigw/tls/tls.key}
+            - {name: CP_ETCD_CA, value: /etc/apigw/etcd-ca/ca.crt}
+            - {name: CP_ETCD_USER, value: control-plane}
+            - {name: CP_ETCD_PASSWORD_FILE, value: /etc/apigw/etcd-control-plane/password}
+          ports:
+            - {name: https, containerPort: 9443, protocol: TCP}
+            - {name: metrics, containerPort: 9902, protocol: TCP}
+          startupProbe:
+            httpGet: {path: /admin/v1/health, port: https, scheme: HTTPS}
+            periodSeconds: 1
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: {path: /admin/v1/ready, port: https, scheme: HTTPS}
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            httpGet: {path: /admin/v1/health, port: https, scheme: HTTPS}
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 2
+          lifecycle:
+            preStop:
+              sleep: {seconds: 5}
+          resources:
+            requests: {cpu: 250m, memory: 256Mi}
+            limits: {memory: 320Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            - {name: tls, mountPath: /etc/apigw/tls, readOnly: true}
+            - {name: etcd-ca, mountPath: /etc/apigw/etcd-ca, readOnly: true}
+            - {name: etcd-control-plane, mountPath: /etc/apigw/etcd-control-plane, readOnly: true}
+      volumes:
+        - name: tmp
+          emptyDir: {medium: Memory, sizeLimit: 16Mi}
+        - name: tls
+          secret: {secretName: control-plane-tls}
+        - name: etcd-ca
+          secret: {secretName: etcd-ca, items: [{key: ca.crt, path: ca.crt}]}
+        - name: etcd-control-plane
+          secret: {secretName: etcd-control-plane, items: [{key: password, path: password}]}

@@ -208,15 +208,24 @@ public final class EtcdTestCluster implements AutoCloseable {
     public final class Member {
         private final int index;
         private final int hostPort;
-        private final GenericContainer<?> container;
+        private final Path tlsDir;
+        private final String initialCluster;
+        private final String name;
+        private volatile GenericContainer<?> container;
         private volatile State state = State.RUNNING;
 
-        @SuppressWarnings("resource")
         Member(int index, Path tlsDir, String initialCluster) {
             this.index = index;
             this.hostPort = freePort();
-            String name = "etcd" + index;
-            this.container = new GenericContainer<>(DockerImageName.parse(image()))
+            this.tlsDir = tlsDir;
+            this.initialCluster = initialCluster;
+            this.name = "etcd" + index;
+            this.container = create("/tmp/etcd-data");
+        }
+
+        @SuppressWarnings("resource")
+        private GenericContainer<?> create(String dataDir) {
+            return new GenericContainer<>(DockerImageName.parse(image()))
                     .withNetwork(network)
                     .withNetworkAliases(name)
                     .withExposedPorts(CLIENT_PORT)
@@ -228,7 +237,7 @@ public final class EtcdTestCluster implements AutoCloseable {
                             CERTS + "server-key.pem")
                     .withCommand("etcd",
                             "--name", name,
-                            "--data-dir", "/tmp/etcd-data",
+                            "--data-dir", dataDir,
                             "--listen-client-urls", "https://0.0.0.0:" + CLIENT_PORT,
                             "--advertise-client-urls", "https://localhost:" + hostPort,
                             "--listen-peer-urls", "http://0.0.0.0:" + PEER_PORT,
@@ -242,6 +251,46 @@ public final class EtcdTestCluster implements AutoCloseable {
                             "--auth-token", "simple")
                     .waitingFor(Wait.forLogMessage(".*ready to serve client requests.*", 1)
                             .withStartupTimeout(Duration.ofSeconds(90)));
+        }
+
+        /** {@code etcdctl snapshot save} as root, copied to {@code target} on the host. */
+        public void snapshot(Path target) {
+            exec(true, "snapshot", "save", "/tmp/snapshot.db");
+            container.copyFileFromContainer("/tmp/snapshot.db", target.toString());
+        }
+
+        /**
+         * Total loss and restore, as in docs/operations/etcd-backup-restore.md: the member's container and data are
+         * discarded, {@code etcdutl snapshot restore} (revision bumped by {@code bumpRevision}, marked compacted)
+         * writes a fresh data directory in a one-shot container, and a new container serves it on the same
+         * endpoint. Single-member clusters only (a multi-member restore restores every member).
+         */
+        @SuppressWarnings("resource")
+        public void restoreFrom(Path snapshot, long bumpRevision, Path workDir) throws IOException {
+            if (members.size() != 1) {
+                throw new IllegalStateException("restoreFrom supports single-member clusters only");
+            }
+            container.stop();
+            state = State.STOPPED;
+            java.nio.file.Files.createDirectories(workDir);
+            java.nio.file.Files.copy(snapshot, workDir.resolve("snapshot.db"),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            makeWorldWritable(workDir);
+            try (GenericContainer<?> restore = new GenericContainer<>(DockerImageName.parse(image()))
+                    .withCreateContainerCmdModifier(cmd -> bindWorkDir(cmd, workDir))
+                    .withCommand("etcdutl", "snapshot", "restore", "/work/snapshot.db",
+                            "--name", name, "--data-dir", "/work/data",
+                            "--initial-cluster", initialCluster,
+                            "--initial-advertise-peer-urls", "http://" + name + ":" + PEER_PORT,
+                            "--bump-revision", Long.toString(bumpRevision), "--mark-compacted")
+                    .withStartupCheckStrategy(new org.testcontainers.containers.startupcheck
+                            .OneShotStartupCheckStrategy().withTimeout(Duration.ofSeconds(60)))) {
+                restore.start();
+            }
+            container = create("/work/data").withCreateContainerCmdModifier(cmd -> bindWorkDir(cmd, workDir));
+            container.start();
+            state = State.RUNNING;
+            awaitHealthy(Duration.ofSeconds(60));
         }
 
         public int index() {
@@ -331,6 +380,18 @@ public final class EtcdTestCluster implements AutoCloseable {
                 com.github.dockerjava.api.model.Ports.Binding.bindIpAndPort("127.0.0.1", hostPort),
                 new com.github.dockerjava.api.model.ExposedPort(CLIENT_PORT));
         java.util.Objects.requireNonNull(cmd.getHostConfig(), "host config").withPortBindings(binding);
+    }
+
+    private static void bindWorkDir(com.github.dockerjava.api.command.CreateContainerCmd cmd, Path dir) {
+        var bind = new com.github.dockerjava.api.model.Bind(dir.toString(),
+                new com.github.dockerjava.api.model.Volume("/work"));
+        java.util.Objects.requireNonNull(cmd.getHostConfig(), "host config").withBinds(bind);
+    }
+
+    private static void makeWorldWritable(Path dir) throws IOException {
+        // The restore container's user differs from the test's; the bind-mounted work dir must be writable by it.
+        java.nio.file.Files.setPosixFilePermissions(dir,
+                java.nio.file.attribute.PosixFilePermissions.fromString("rwxrwxrwx"));
     }
 
     private static int freePort() {

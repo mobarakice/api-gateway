@@ -184,6 +184,31 @@ class ConfigWorkerIT {
         }
     }
 
+    /**
+     * Backup and total-loss restore (docs/operations/etcd-backup-restore.md) under a running gateway: a change made
+     * after the snapshot is rolled back by the restore, the gateway converges to the restored state without a
+     * restart (the revision bump + compaction forces its resync), keeps serving throughout, and later changes apply.
+     */
+    @Test
+    void restoreFromSnapshotIsPickedUpByRunningGateways() throws Exception {
+        Gw base = env("gw-restore");
+        try (GatewayProcess gw = GatewayProcess.start(List.of(), base.env())) {
+            gw.awaitLine(l -> l.contains("\"msg\":\"ready revision="), WAIT);
+            Path snapshot = tmp.resolve("backup.db");
+            etcd.snapshot(snapshot);
+            EtcdGatewaySupport.putRoute(ctl, PREFIX, "after-backup", "/after-backup");
+            await(base.http(), "/after-backup", status(200), WAIT, gw);
+
+            etcd.restoreFrom(snapshot, 1_000_000_000L, tmp.resolve("restore-work"));
+            await(base.http(), "/after-backup", status(404), WAIT, gw);
+            assertThat(get(base.http(), "/a").status()).isEqualTo(200);
+            await(base.status(), "/configz", configState("SERVING"), WAIT, gw);
+            EtcdGatewaySupport.putRoute(ctl, PREFIX, "after-restore", "/after-restore");
+            await(base.http(), "/after-restore", status(200), WAIT, gw);
+            assertThat(get(base.status(), "/metrics").body()).contains("gw_config_resyncs_total 1");
+        }
+    }
+
     @Test
     void networkPartitionIsDetectedAndHealed() throws Exception {
         Gw g = env("gw-partition");

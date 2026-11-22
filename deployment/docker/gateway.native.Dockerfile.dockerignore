@@ -1,0 +1,12 @@
+# Context = repository root; send sources only (no build outputs, caches, secrets or the console).
+.git
+.gradle
+.idea
+**/build
+**/.DS_Store
+admin-console
+benchmarks/build
+deployment
+docs
+performance
+*.md

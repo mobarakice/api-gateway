@@ -1,0 +1,30 @@
+# CPU plus requests per second per pod. CPU alone lags for a latency-sensitive gateway: utilisation is averaged
+# over the metrics window and rises only once event loops are already queueing, so p99 degrades before a
+# scale-up is triggered. RPS per pod tracks offered load directly. The RPS metric comes from Prometheus through
+# prometheus-adapter (components/monitoring/prometheus-adapter-rules.yaml); docs/operations/kubernetes.md.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: gateway
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: gateway}
+  minReplicas: 3
+  maxReplicas: 30
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: {type: Utilization, averageUtilization: 60}
+    - type: Pods
+      pods:
+        metric: {name: gw_requests_per_second}
+        target: {type: AverageValue, averageValue: "20k"}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - {type: Percent, value: 100, periodSeconds: 30}
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - {type: Pods, value: 1, periodSeconds: 60}

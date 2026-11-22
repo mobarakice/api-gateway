@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+spec:
+  replicas: 2
+  template:
+    spec:
+      containers:
+        - name: gateway
+          resources:
+            requests: {cpu: 250m, memory: 256Mi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: control-plane
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: control-plane
+          resources:
+            requests: {cpu: 100m, memory: 192Mi}
+          volumeMounts:
+            - {name: oidc, mountPath: /etc/apigw/oidc, readOnly: true}
+      volumes:
+        - name: oidc
+          secret: {secretName: control-plane-oidc, items: [{key: jwks.json, path: jwks.json}]}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: console
+spec:
+  replicas: 1
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: etcd
+spec:
+  template:
+    spec:
+      containers:
+        - name: etcd
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {memory: 512Mi}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests: {storage: 1Gi}

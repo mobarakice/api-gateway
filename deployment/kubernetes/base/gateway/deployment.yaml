@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  labels: {app.kubernetes.io/name: gateway, app.kubernetes.io/component: data-plane}
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels: {app.kubernetes.io/name: gateway}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxUnavailable: 0, maxSurge: 25%}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: gateway, app.kubernetes.io/component: data-plane}
+    spec:
+      serviceAccountName: gateway
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # preStop sleep (endpoint removal propagates) + GW_SHUTDOWN_GRACE_SECONDS (drain) + margin.
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {app.kubernetes.io/name: gateway}
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {app.kubernetes.io/name: gateway}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels: {app.kubernetes.io/name: gateway}
+      containers:
+        - name: gateway
+          image: apigw/gateway:0.9.0
+          imagePullPolicy: IfNotPresent
+          # Native-image runtime options (heap sized below the memory limit; GC choice: ADR 0008).
+          args: ["-Xmx320m"]
+          envFrom:
+            - configMapRef: {name: gateway-env}
+          env:
+            - name: GW_GATEWAY_ID
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - {name: GW_ETCD_CA, value: /etc/apigw/etcd-ca/ca.crt}
+            - {name: GW_ETCD_USER, value: gateway}
+            - {name: GW_ETCD_PASSWORD_FILE, value: /etc/apigw/etcd-gateway/password}
+            - {name: GW_LKG_DIR, value: /var/lib/gateway/lkg}
+          ports:
+            - {name: http, containerPort: 8080, protocol: TCP}
+            - {name: status, containerPort: 9901, protocol: TCP}
+          startupProbe:
+            httpGet: {path: /healthz, port: status}
+            periodSeconds: 1
+            failureThreshold: 60
+          # Ready = a valid snapshot is serving (current or last-known-good); fails first on SIGTERM.
+          readinessProbe:
+            httpGet: {path: /readyz, port: status}
+            periodSeconds: 2
+            failureThreshold: 1
+            successThreshold: 1
+          livenessProbe:
+            httpGet: {path: /healthz, port: status}
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 2
+          lifecycle:
+            # Keep serving while kube-proxy / load balancers drop this endpoint, then SIGTERM starts the drain.
+            preStop:
+              sleep: {seconds: 10}
+          resources:
+            requests: {cpu: "1", memory: 384Mi}
+            # No CPU limit: CFS throttling adds tail latency to an event-loop server (docs/operations/kubernetes.md).
+            limits: {memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: lkg, mountPath: /var/lib/gateway/lkg}
+            - {name: tmp, mountPath: /tmp}
+            - {name: etcd-ca, mountPath: /etc/apigw/etcd-ca, readOnly: true}
+            - {name: etcd-gateway, mountPath: /etc/apigw/etcd-gateway, readOnly: true}
+      volumes:
+        # Last-known-good snapshot: survives container restarts in the pod (serve during an etcd outage).
+        - name: lkg
+          emptyDir: {sizeLimit: 64Mi}
+        - name: tmp
+          emptyDir: {medium: Memory, sizeLimit: 16Mi}
+        - name: etcd-ca
+          secret: {secretName: etcd-ca, items: [{key: ca.crt, path: ca.crt}]}
+        - name: etcd-gateway
+          secret: {secretName: etcd-gateway, items: [{key: password, path: password}]}

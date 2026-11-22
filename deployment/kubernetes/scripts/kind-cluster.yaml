@@ -1,0 +1,13 @@
+# Local rehearsal cluster: 1 control-plane + 3 workers (one etcd member per node, required anti-affinity).
+# kindnet enforces NetworkPolicy. Functional rehearsals only; never a benchmark target.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: apigw
+nodes:
+  - role: control-plane
+  - role: worker
+    labels: {topology.kubernetes.io/zone: zone-a}
+  - role: worker
+    labels: {topology.kubernetes.io/zone: zone-b}
+  - role: worker
+    labels: {topology.kubernetes.io/zone: zone-c}

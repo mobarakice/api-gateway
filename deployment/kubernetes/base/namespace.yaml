@@ -1,0 +1,9 @@
+# Renamed per overlay (kustomize `namespace:`). Pod Security "restricted" is enforced for every workload here.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: apigw
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted

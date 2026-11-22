@@ -1,0 +1,8 @@
+{
+  "apiBase": "https://admin.staging.example.com",
+  "oidc": {
+    "authority": "https://idp.staging.example.com/realms/gateway",
+    "clientId": "admin-console",
+    "scope": "openid"
+  }
+}

@@ -1,0 +1,45 @@
+# dev: kind or any small cluster. Locally built images (kind load), 2 gateways, CPU-only HPA (no metrics adapter),
+# OIDC keys from a JWKS file Secret, an in-namespace echo upstream and S3-compatible store for backup rehearsals.
+# Secrets: deployment/kubernetes/scripts/dev-secrets.sh. Rehearsals: deployment/kubernetes/scripts/rehearse.sh.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: apigw-dev
+resources:
+  - ../../base
+  - echo.yaml
+  - object-store.yaml
+configMapGenerator:
+  - name: gateway-env
+    behavior: merge
+    literals:
+      - GW_ETCD_PREFIX=/gw/dev/
+      - GW_LOG_LEVEL=INFO
+  - name: control-plane-env
+    behavior: merge
+    literals:
+      - CP_ETCD_PREFIX=/gw/dev/
+      - CP_OIDC_ISSUER=https://issuer.apigw-dev.invalid
+      - CP_OIDC_JWKS_FILE=/etc/apigw/oidc/jwks.json
+      - CP_OIDC_ALGORITHMS=RS256
+      - CP_CORS_ORIGINS=http://localhost:8280
+  - name: etcd-ops-env
+    behavior: merge
+    literals:
+      - ETCD_PREFIX=/gw/dev/
+      - BACKUP_REMOTE=backup:apigw-etcd/dev
+      - BACKUP_RETENTION=2d
+  - name: console-config
+    behavior: replace
+    files: [sws.toml, config.json]
+patches:
+  - path: patch-dev.yaml
+  - target: {kind: HorizontalPodAutoscaler, name: gateway}
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 2
+      - op: replace
+        path: /spec/maxReplicas
+        value: 4
+      - op: remove
+        path: /spec/metrics/1

@@ -1,0 +1,8 @@
+{
+  "apiBase": "https://localhost:9443",
+  "oidc": {
+    "authority": "https://issuer.apigw-dev.invalid",
+    "clientId": "admin-console",
+    "scope": "openid"
+  }
+}

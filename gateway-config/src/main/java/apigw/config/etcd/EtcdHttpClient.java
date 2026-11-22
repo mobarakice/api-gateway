@@ -11,6 +11,7 @@ import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClientAgent;
 import io.vertx.core.http.HttpClientOptions;
 import io.vertx.core.http.HttpClientRequest;
+import io.vertx.core.http.HttpConnection;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpVersion;
 import io.vertx.core.http.PoolOptions;
@@ -37,9 +38,12 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public final class EtcdHttpClient implements AutoCloseable {
 
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(EtcdHttpClient.class);
     private static final String AUTHORIZATION = "authorization";
 
     private final HttpClientAgent http;
+    /** Open connections (unary pool + watch streams), so a transport failure can discard them all. */
+    private final java.util.Set<HttpConnection> connections;
     private final EtcdClientConfig config;
     private final List<URI> endpoints;
     private final AtomicInteger current = new AtomicInteger();
@@ -52,8 +56,9 @@ public final class EtcdHttpClient implements AutoCloseable {
         void call(String op, boolean ok, long nanos);
     }
 
-    private EtcdHttpClient(HttpClientAgent http, EtcdClientConfig config) {
+    private EtcdHttpClient(HttpClientAgent http, java.util.Set<HttpConnection> connections, EtcdClientConfig config) {
         this.http = http;
+        this.connections = connections;
         this.config = config;
         this.endpoints = config.endpoints();
     }
@@ -71,7 +76,16 @@ public final class EtcdHttpClient implements AutoCloseable {
                     .setCertPath(cert.toString())
                     .setKeyPath(config.clientKey().orElseThrow().toString())));
         }
-        return new EtcdHttpClient(vertx.createHttpClient(options, new PoolOptions().setHttp1MaxSize(8)), config);
+        java.util.Set<HttpConnection> open = java.util.concurrent.ConcurrentHashMap.newKeySet();
+        HttpClientAgent http = vertx.httpClientBuilder()
+                .with(options)
+                .with(new PoolOptions().setHttp1MaxSize(8))
+                .withConnectHandler(conn -> {
+                    open.add(conn);
+                    conn.closeHandler(v -> open.remove(conn));
+                })
+                .build();
+        return new EtcdHttpClient(http, open, config);
     }
 
     /** Sets the observer of unary requests (metrics). */
@@ -217,7 +231,10 @@ public final class EtcdHttpClient implements AutoCloseable {
             if (t != null) {
                 opts.putHeader(AUTHORIZATION, t);
             }
-            return http.request(opts).onFailure(e -> rotate(endpoint));
+            return http.request(opts).onFailure(e -> {
+                rotate(endpoint);
+                dropConnections();
+            });
         }).compose(req -> {
             watch.attach(req);
             return req.send(EtcdJson.write(EtcdJson.watchCreate(prefix, EtcdJson.prefixEnd(prefix),
@@ -311,9 +328,31 @@ public final class EtcdHttpClient implements AutoCloseable {
                         return Future.failedFuture(e);
                     }
                     rotate(endpoint);
+                    dropConnections();
                     return Future.failedFuture(new EtcdException("etcd request to " + endpoint + " failed: "
                             + e.getMessage(), e));
                 });
+    }
+
+    /**
+     * Resets transport state after a transport failure (timeout, reset, refused):
+     * <ul>
+     *   <li>Drops the auth token. A simple token ({@code <token>.<raftIndex>}) is honoured only once the member's
+     *       applied index reaches the index it was issued at; a cluster restored from a snapshot restarts at a low
+     *       raft index, so a request carrying an old token hangs until it times out instead of failing as invalid.
+     *       Re-authenticating costs one request.</li>
+     *   <li>Closes every pooled connection: a member that vanished without closing its sockets (pod deleted,
+     *       node lost) leaves keep-alive connections that never answer, and reconnecting re-resolves its DNS name.</li>
+     * </ul>
+     */
+    private void dropConnections() {
+        token = null;
+        if (!connections.isEmpty()) {
+            LOG.info("closing {} etcd connection(s) after a transport failure", connections.size());
+            for (HttpConnection c : connections) {
+                c.close();
+            }
+        }
     }
 
     private void rotate(URI failed) {

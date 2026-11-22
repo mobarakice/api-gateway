@@ -31,3 +31,4 @@ performance/results/**/*.hdr.gz
 
 # Local Compose stack: generated dev certs and secrets
 deployment/docker/.local/
+deployment/kubernetes/.local/
