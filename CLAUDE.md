@@ -28,7 +28,7 @@ if you change a command, module, or convention, update this file in the same com
 | `deployment/kubernetes/` | Kustomize `base/` (gateway, control-plane, console, etcd StatefulSet + backup/defrag CronJobs, NetworkPolicies, PSA restricted), `components/monitoring` (PodMonitors, generated PrometheusRule), `overlays/{dev,staging,prod}`, `validate.sh`, `scripts/` (kind cluster, dev secrets, token minting, seed, drain test, backup/restore rehearsal). ADR 0024; `docs/operations/kubernetes.md`, `etcd-backup-restore.md` |
 | `deployment/observability/` | Prometheus scrape config, recording/alert rules + promtool tests, Grafana dashboard JSON and provisioning. Runbooks: `docs/operations/observability.md` |
 | `performance/` | k6/wrk2 scripts and raw results |
-| `docs/` | Architecture, ADRs (`docs/adr/`), API (OpenAPI), operations, performance |
+| `docs/` | Architecture, ADRs (`docs/adr/`), API (OpenAPI), operations (reference + runbooks), `guides/` (task-oriented: Docker and Kubernetes deployment, user guide; link to reference docs, don't copy), performance. `README.md` at the root is the entry point |
 
 ## Commands
 

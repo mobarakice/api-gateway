@@ -1,5 +1,7 @@
 # Admin console
 
+Task walkthrough (routes, services, plugins, consumers): [user guide](../guides/user-guide.md).
+
 A web UI for the Admin API (ADR 0022). It never talks to etcd or the gateways.
 
 ## Run it locally

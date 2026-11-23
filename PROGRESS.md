@@ -666,6 +666,18 @@ Not in M9:
   Secrets are referenced by name only.
 - WebSocket proxying and gRPC trailers passthrough (M5 note): not done in M9, still open.
 
+## Docs: deployment and user guides (2026-11-23)
+
+- Added `README.md`, `docs/guides/deploy-docker.md`, `docs/guides/deploy-kubernetes.md` and
+  `docs/guides/user-guide.md`. Cross-links were added from `docs/operations/{kubernetes,admin-console}.md`.
+- Checked: every relative link and anchor resolves. Console labels, Admin API shapes, plugin fields, compose
+  ports and env vars were checked against the source (`admin-console/src`, `docs/api/admin-v1.yaml`,
+  `config-model/.../schemas/plugins`, `compose.yml`).
+- `docker compose ... up -d --build` built the gateway, control-plane, console and dev-init images.
+- BLOCKED: running the guides end to end (Compose readiness, the user-guide `curl` walkthrough, sign-in) and
+  `deployment/kubernetes/validate.sh`. The Docker Desktop daemon hung after the image build: containers stayed
+  in `Created`, and `docker run` and `docker info` did not return. Re-run once Docker is restarted.
+
 ## Known blockers
 
 - BLOCKED: reference benchmark host. The spec's reference host (2 vCPU / 4 GB, Linux) and a separate

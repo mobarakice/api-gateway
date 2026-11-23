@@ -1,5 +1,7 @@
 # Kubernetes deployment
 
+Step-by-step walkthrough: [Deploying on Kubernetes](../guides/deploy-kubernetes.md).
+
 Manifests live in `deployment/kubernetes/`: a Kustomize `base`, the `dev`, `staging` and `prod` overlays, and an optional
 `components/monitoring` (Prometheus Operator). They target Kubernetes 1.30 or later and are validated against
 1.30 and 1.34 with kubeconform in strict mode.
